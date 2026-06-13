@@ -119,7 +119,7 @@ class CopilotClient(ModelClient):
         oauth_token: str | None = None,
         editor_version: str = "vscode/1.95.0",
         integration_id: str = "vscode-chat",
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ):
         self.model = model
         self._oauth_token = (

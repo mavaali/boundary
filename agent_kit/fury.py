@@ -269,7 +269,7 @@ class Fury:
             report.checks.append(CheckResult(
                 "cache_utilization",
                 passed=True,
-                detail=f"{cached:,}/{total_in:,} input tokens cached ({int(ratio*100)}%) — saved ~${self._cache_savings(report.summary.get('model'), cached):.4f}",
+                detail=f"{cached:,}/{total_in:,} input tokens cached ({int(ratio*100)}%) — saved ~${Fury._cache_savings(report.summary.get('model'), cached):.4f}",
                 severity="info",
             ))
 
