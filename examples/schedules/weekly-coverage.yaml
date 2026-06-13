@@ -1,0 +1,39 @@
+name: weekly-competitive-coverage
+schedule: "weekly mon 09:00"
+persona: banner
+workspace: ~/projects/FabricSpecs
+
+envelope:
+  writable_paths:
+    - scratch/weekly-coverage-{date}.md
+  max_writes: 3
+  min_writes: 1
+  max_iters: 25
+  max_dollars: 0.50
+  max_wall_seconds: 600
+
+on_ambiguity: queue
+on_failure: digest
+notify: digest_daily
+
+task: |
+  Weekly competitive coverage check.
+
+  Survey existing competitive research in this workspace, following the source
+  hierarchy: WIKI FIRST (Data Factory/wiki/), then repo (Data Factory/compete/,
+  strategy/, Growth/), then general grep as fallback.
+
+  Competitors: Databricks, Snowflake, Airflow, dbt, Fivetran, Informatica,
+  Talend, ADF legacy, Matillion.
+
+  For each competitor produce a short row:
+  - Wiki coverage: page path (if any) + 1-line takeaway
+  - Repo coverage: count of compete/ + strategy/ files via count_matches + 1-2
+    most important file paths
+  - Gap call: does general grep total significantly exceed wiki + compete
+    coverage? If yes, that is a wiki-coverage gap worth flagging.
+
+  Label every claim [DATA] (tool result here) / [TRAINING] / [HYPOTHESIS].
+
+  Write to the allowed path. Verify by reading back. End with a 3-bullet summary —
+  each bullet must cite at least one [DATA] tool result.
