@@ -342,6 +342,7 @@ class EnvelopeRunner:
 
             if self.agent.transcript:
                 self.agent.transcript.log("request", iteration=i, n_messages=len(messages))
+            chat_kwargs.setdefault("max_tokens", 32000)
             resp: ChatResponse = self.agent.client.chat(messages, tools=tool_schemas, **chat_kwargs)
             total_in += resp.input_tokens
             total_out += resp.output_tokens
