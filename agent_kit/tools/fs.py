@@ -52,6 +52,30 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
         return f"wrote {len(content)} chars to {p.relative_to(workspace.root)}"
 
     @registry.add(
+        "append_file",
+        "Append content to the end of an existing UTF-8 text file. WRITE TOOL — must include 'reason'. Use this to chunk a long write across multiple tool calls (call write_file once, then append_file for subsequent chunks) so you stay under the per-response output cap. append_file does NOT count against max_writes; it counts against a separate max_appends cap.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "reason": {"type": "string", "description": "Why this append is needed. Required."},
+            },
+            "required": ["path", "content", "reason"],
+        },
+        kind="write",
+    )
+    def append_file(path: str, content: str, reason: str = "") -> str:
+        p = workspace.resolve(path)
+        if not p.exists():
+            return f"ERROR: file not found: {path} — append_file requires a prior write_file"
+        if not p.is_file():
+            return f"ERROR: not a regular file: {path}"
+        with p.open("a", encoding="utf-8") as f:
+            f.write(content)
+        return f"appended {len(content)} chars to {p.relative_to(workspace.root)}"
+
+    @registry.add(
         "edit_file",
         "Replace exactly one occurrence of old_str with new_str. WRITE TOOL — include 'reason'.",
         {

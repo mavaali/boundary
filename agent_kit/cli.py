@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--envelope-writable", action="append", default=[], help="add a writable path/glob to the envelope (repeat for multiple). Activates envelope mode.")
     run.add_argument("--envelope-max-writes", type=int, default=10)
     run.add_argument("--envelope-min-writes", type=int, default=1)
+    run.add_argument("--envelope-max-appends", type=int, default=10, help="max append_file calls (chunked-write continuations); separate from max_writes")
     run.add_argument("--envelope-max-external", type=int, default=20)
     run.add_argument("--envelope-max-input-tokens", type=int, default=500_000)
     run.add_argument("--envelope-max-output-tokens", type=int, default=50_000)
@@ -104,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         result = dispatch(proposal, workspace=args.workspace, client=args.client, model=args.model, verbose=args.verbose)
         print("\n=== final ===")
         print(result.loop_result.final_message.content or "(no content)")
-        print(f"\n[envelope: writes={result.writes_executed}/{proposal.max_writes} attempted={result.writes_attempted} external={result.external_calls} halted={result.halted_for_ambiguity}]")
+        print(f"\n[envelope: writes={result.writes_executed}/{proposal.max_writes} attempted={result.writes_attempted} appends={result.appends_executed} external={result.external_calls} halted={result.halted_for_ambiguity}]")
         # auto-Fury
         from agent_kit.fury import Fury
         # find latest transcript by mtime
@@ -290,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                     writable_paths=args.envelope_writable,
                     max_writes=args.envelope_max_writes,
                     min_writes=args.envelope_min_writes,
+                    max_appends=args.envelope_max_appends,
                     max_external=args.envelope_max_external,
                     max_input_tokens=args.envelope_max_input_tokens,
                     max_output_tokens=args.envelope_max_output_tokens,
@@ -301,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n=== final ===")
                 print(result.loop_result.final_message.content or "(no content)")
                 print(f"\n[iterations={result.loop_result.iterations} stop={result.loop_result.stop_reason} wall={result.wall_seconds:.1f}s]")
-                print(f"[envelope: writes={result.writes_executed}/{env.max_writes} attempted={result.writes_attempted} external={result.external_calls}]")
+                print(f"[envelope: writes={result.writes_executed}/{env.max_writes} attempted={result.writes_attempted} appends={result.appends_executed}/{env.max_appends} external={result.external_calls}]")
                 print(f"[spend: in={result.input_tokens:,} (cached={result.cached_input_tokens:,}) out={result.output_tokens:,} est=${result.estimated_dollars:.4f}]")
                 if agent.transcript:
                     print(f"[transcript: {agent.transcript.path}]")

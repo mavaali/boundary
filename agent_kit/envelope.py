@@ -30,6 +30,10 @@ class Envelope:
     max_writes: int = 10
     min_writes: int = 1
     max_external: int = 20
+    # Chunked-write continuation cap. append_file uses this, NOT max_writes,
+    # so an agent can split one logical long write across many appends without
+    # eating its write budget. Set 0 to disable chunked writes entirely.
+    max_appends: int = 10
     require_reason: bool = True
     allow_bash: bool = True
     stop_on_ambiguity: bool = True
@@ -94,6 +98,7 @@ class EnvelopeRunResult:
     events: list[EnvelopeEvent]
     writes_attempted: int
     writes_executed: int
+    appends_executed: int
     external_calls: int
     halted_for_ambiguity: bool
     input_tokens: int = 0
@@ -123,7 +128,42 @@ def _make_enforced_tool(
             if not reason:
                 events.append(EnvelopeEvent("missing_reason", base.name, "(no reason)", i))
                 return f"ENVELOPE REFUSED: tool '{base.name}' is a {base.kind} tool — you must include a non-empty 'reason' field."
-        # 2. Write-path check
+
+        # Helper: did the underlying tool return a soft error sentinel?
+        def _is_error_result(r) -> bool:
+            return isinstance(r, str) and r.startswith("ERROR:")
+
+        # 2. append_file — continuation of a prior write_file. Counted against
+        #    max_appends, NOT max_writes. Lets the agent chunk a long write
+        #    across multiple tool calls to bypass per-response output caps.
+        if base.name == "append_file":
+            path = kwargs.get("path", "")
+            if not envelope.path_allowed(path):
+                events.append(EnvelopeEvent("write_refused", base.name, f"path={path}", i))
+                return (
+                    f"ENVELOPE REFUSED: path '{path}' is not in writable_paths "
+                    f"{envelope.writable_paths}."
+                )
+            if counters.get("appends_executed", 0) >= envelope.max_appends:
+                events.append(EnvelopeEvent("limit_hit", base.name, f"max_appends={envelope.max_appends}", i))
+                return f"ENVELOPE REFUSED: max_appends ({envelope.max_appends}) reached."
+            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
+            try:
+                result = original_fn(**kwargs_no_reason)
+            except Exception as e:
+                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
+                raise
+            if _is_error_result(result):
+                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
+                return result
+            counters["appends_executed"] = counters.get("appends_executed", 0) + 1
+            events.append(EnvelopeEvent("write_allowed", base.name, f"path={path} (append)", i))
+            return result
+
+        # 3. write_file / edit_file — count only on success. Failed attempts
+        #    (exceptions or "ERROR:" sentinels) bump writes_attempted but NOT
+        #    writes_executed, so a TypeError on missing kwargs doesn't burn the
+        #    write budget.
         if base.kind == "write" and base.name in ("write_file", "edit_file"):
             counters["writes_attempted"] = counters.get("writes_attempted", 0) + 1
             path = kwargs.get("path", "")
@@ -136,10 +176,26 @@ def _make_enforced_tool(
                 )
             if counters.get("writes_executed", 0) >= envelope.max_writes:
                 events.append(EnvelopeEvent("limit_hit", base.name, f"max_writes={envelope.max_writes}", i))
-                return f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached."
+                return (
+                    f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached. "
+                    f"If you need to extend an existing write, use append_file (counted "
+                    f"against max_appends={envelope.max_appends}, not max_writes)."
+                )
+            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
+            try:
+                result = original_fn(**kwargs_no_reason)
+            except Exception as e:
+                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
+                raise
+            if _is_error_result(result):
+                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
+                return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
             events.append(EnvelopeEvent("write_allowed", base.name, f"path={path}", i))
-        # 3. Bash special case — count as write if envelope says so
+            return result
+
+        # 4. Bash special case — counts as a write iff envelope.allow_bash.
+        #    Same success-only accounting as write_file/edit_file.
         if base.name == "bash":
             if not envelope.allow_bash:
                 return "ENVELOPE REFUSED: bash is disabled for this run."
@@ -147,15 +203,27 @@ def _make_enforced_tool(
             if counters.get("writes_executed", 0) >= envelope.max_writes:
                 events.append(EnvelopeEvent("limit_hit", base.name, f"max_writes={envelope.max_writes}", i))
                 return f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached."
+            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
+            try:
+                result = original_fn(**kwargs_no_reason)
+            except Exception as e:
+                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
+                raise
+            if _is_error_result(result):
+                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
+                return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
             events.append(EnvelopeEvent("write_allowed", base.name, "bash", i))
-        # 4. External rate cap
+            return result
+
+        # 5. External rate cap
         if base.kind == "external":
             counters["external_calls"] = counters.get("external_calls", 0) + 1
             if counters["external_calls"] > envelope.max_external:
                 events.append(EnvelopeEvent("limit_hit", base.name, f"max_external={envelope.max_external}", i))
                 return f"ENVELOPE REFUSED: max_external ({envelope.max_external}) reached."
-        # 5. Strip reason before calling underlying fn (it doesn't expect it)
+
+        # 6. Default path — read tools and unmetered externals
         kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
         return original_fn(**kwargs_no_reason)
 
@@ -201,15 +269,25 @@ the loop if you exceed it.
 
 - **Writable paths (workspace-relative):** {writable_paths}
   Any write outside this list will be refused. Do not retry — call `ask_human`.
-- **Max writes:** {max_writes}. **Min writes:** {min_writes}.
+- **Max writes:** {max_writes}. **Min writes:** {min_writes}. **Max appends:** {max_appends}.
   Plan to produce your first write by ~60% of iteration budget. Read, write a
   first draft, then iterate via `edit_file`. Do NOT save the write to the end.
+- **Chunking long writes:** the per-response output cap is ~16k tokens, and
+  extended thinking eats into that. If you expect to emit more than ~8k tokens
+  of new content into a single file, split it: call `write_file` for the first
+  chunk, then `append_file` for each subsequent chunk. `append_file` does NOT
+  count against `max_writes` (it counts against `max_appends={max_appends}`).
+  Treat the full chunked sequence as one logical write.
 - **Iteration budget:** {max_iters}. You will get a [envelope] nudge at 60% and
   80% if you haven't written yet — treat those as hard signals to write now.
 - **Spend budget:** the runtime tracks input/output tokens and halts when the
   cap is hit. Spend is the real budget; iterations are a safety net. Each
   pressure nudge tells you tokens used — if you're burning tokens reading the
   same files repeatedly, stop and write.
+- **Failed writes do not consume your write budget.** If a `write_file` /
+  `edit_file` call raises (e.g. TypeError on missing args) or returns an
+  `ERROR:` sentinel, the attempt is logged but `writes_executed` does NOT
+  increment. Read the error, fix the call, and retry.
 - **Reason required:** every `write`/`external` tool call needs a non-empty `reason` field.
 - **Ambiguity:** if the task is underspecified OR you would otherwise interpolate,
   call `ask_human(question=..., options=[...])`. This halts the loop cleanly.
@@ -248,6 +326,7 @@ class EnvelopeRunner:
             writable_paths=self.envelope.writable_paths,
             max_writes=self.envelope.max_writes,
             min_writes=self.envelope.min_writes,
+            max_appends=self.envelope.max_appends,
             max_iters=self.agent.max_iters,
         )
         system = self.agent.system_prompt + envelope_note
@@ -259,6 +338,7 @@ class EnvelopeRunner:
             self.agent.transcript.log("envelope_start",
                 writable_paths=self.envelope.writable_paths,
                 max_writes=self.envelope.max_writes,
+                max_appends=self.envelope.max_appends,
                 max_input_tokens=self.envelope.max_input_tokens,
                 max_output_tokens=self.envelope.max_output_tokens,
                 max_dollars=self.envelope.max_dollars,
@@ -386,6 +466,7 @@ class EnvelopeRunner:
                 # the "make constraints unavoidable, not buried in setup" fix
                 # from the Uatu/Fury jugalbandi.
                 writes_used = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
+                appends_used = enforced._counters.get("appends_executed", 0)  # type: ignore[attr-defined]
                 ext_used = enforced._counters.get("external_calls", 0)  # type: ignore[attr-defined]
                 iters_left = max_iters - i
                 est_now = self.envelope.estimate_cost(model_name, total_in, total_out, total_cached)
@@ -395,6 +476,8 @@ class EnvelopeRunner:
                     f"tokens {total_in:,}in/{total_out:,}out",
                     f"${est_now:.4f}",
                 ]
+                if appends_used:
+                    banner_bits.append(f"appends {appends_used}/{self.envelope.max_appends}")
                 if self.envelope.max_dollars is not None:
                     banner_bits.append(f"cap ${self.envelope.max_dollars:.2f}")
                 if ext_used:
@@ -430,6 +513,7 @@ class EnvelopeRunner:
             self.agent.transcript.log("envelope_end",
                 writes_attempted=c.get("writes_attempted", 0),
                 writes_executed=c.get("writes_executed", 0),
+                appends_executed=c.get("appends_executed", 0),
                 external_calls=c.get("external_calls", 0),
                 halted_for_ambiguity=halt_flag[0],
                 halted_for_budget=halted_for_budget,
@@ -447,6 +531,7 @@ class EnvelopeRunner:
             events=events,
             writes_attempted=c.get("writes_attempted", 0),
             writes_executed=c.get("writes_executed", 0),
+            appends_executed=c.get("appends_executed", 0),
             external_calls=c.get("external_calls", 0),
             halted_for_ambiguity=halt_flag[0],
             input_tokens=total_in,
