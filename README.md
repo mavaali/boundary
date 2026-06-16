@@ -1,5 +1,7 @@
 # Boundary
 
+[![selftest](https://github.com/mavaali/boundary/actions/workflows/selftest.yml/badge.svg)](https://github.com/mavaali/boundary/actions/workflows/selftest.yml)
+
 **Agents do not need more trust. They need a boundary.**
 
 Boundary runs tool-calling agents inside an explicit envelope: what they may
@@ -35,6 +37,55 @@ complete sandbox: shell commands may still read files allowed by the operating
 system user, and network egress is not fully blocked. For sensitive work, run
 Boundary as a dedicated OS user or inside a container, and disable shell or web
 tools when they are not needed.
+
+## Where Boundary sits
+
+Boundary's category is **authorization + post-run verification** for tool-calling
+agents. Here is what the envelope defends and what it doesn't — stated plainly,
+because differentiation by silence reads as ignorance of the field.
+
+### The lethal trifecta
+
+The [lethal trifecta](https://simonwillison.net/2025/Jun/16/lethal-trifecta/) —
+private-data access **+** exposure to untrusted content **+** external
+communication — is what turns a prompt injection into an exfiltration. Boundary
+addresses two-thirds of it:
+
+| Trifecta leg | Boundary today |
+|---|---|
+| Private-data access | **Not defended** — reads are free and unbounded; the envelope bounds writes, not reads |
+| Untrusted content drives action | **Partially** — the staging pivot forces a committed thesis before deep reads/writes |
+| External communication | **Typed commits only** — commit-tool gating + write allowlist bound irreversible/outbound actions; OS-level network egress is not yet bounded |
+
+The honest gap: an allowlisted write is itself an exfiltration channel if its
+content is tainted. Closing it is information-flow tracking — on the roadmap, not
+shipped.
+
+### The six secure-agent design patterns
+
+Against the [six design patterns for securing LLM agents](https://arxiv.org/abs/2506.08837),
+Boundary is mainly a **Plan-Then-Execute** system — the staging pivot is its
+"commit a plan before acting" — with **Action-Selector** typed commit tools for
+irreversible actions. The twist those patterns don't have: a *post-run* check
+(the Third Umpire) that the plan actually held. Boundary does not implement
+Dual-LLM or Context-Minimization isolation; those stay available as overlays if
+coarse controls prove insufficient. A fixed plan protects action *choice*, not
+action *parameters* — Boundary inherits that limit and names it.
+
+### How this differs from neighbors
+
+Neighbor characterizations are from the
+[coding-agent sandbox census](https://gist.github.com/wincent/2752d8d97727577050c043e4ff9e386e).
+
+| Project | Category | Boundary's difference |
+|---|---|---|
+| **predicate-secure** | Policy authz + post-run verification (closest sibling) | Same shape, plus the **staging pivot**: a mid-run gate that makes a refused write resume from a staged thesis instead of restarting research |
+| **Cupcake** | OPA/Rego policy hooks on tool calls | Boundary's authz is a typed envelope (write allowlist + commit policy), not a general policy engine — narrower, but the Third Umpire *grades whether the envelope held*, which a hook layer doesn't |
+| **nah** | allow / ask / block guard on commands | Same allow/ask/refuse verbs, but attached to typed tool *kinds* and a write-count budget, with post-run grading on top |
+
+**The primitive none of them have is the staging pivot** — forcing the agent to
+stage a provisional answer mid-run, then resuming a refused write from that stage
+rather than from scratch. That is Boundary's differentiator.
 
 ## Read the guide
 

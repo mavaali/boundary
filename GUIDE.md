@@ -531,6 +531,11 @@ Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact sp
 
 ## Security boundary
 
+For where Boundary sits in the field — what the envelope defends and doesn't,
+mapped onto the lethal trifecta and the six secure-agent design patterns, plus
+how it compares to neighbors (predicate-secure, Cupcake, nah) — see
+[Where Boundary sits](README.md#where-boundary-sits) in the README.
+
 Boundary has two practical safety layers:
 
 1. The workspace boundary controls where file tools operate.
