@@ -464,24 +464,27 @@ Validation errors block install:
 - `commit_allowlist` set but `on_commit != allow` (would be ignored)
 - `on_commit` not in {refuse, queue, allow}
 
-### The bash loophole and the kill-list
+### The bash loophole: the egress proxy is the boundary, the denylist is a nudge
 
-Bash is now locally sandboxed on macOS with `sandbox-exec`: regular `bash` and `bash_commit` run with file writes denied everywhere except the workspace root. The runner also sets `HOME`, `TMPDIR`, and XDG cache/config/data dirs inside the workspace so common tools do not spill caches into your real home directory. Reads and network access are still allowed; the sandbox is a local filesystem write boundary, not a full network sandbox.
+Bash can sidestep typed commit tools for external side effects: `curl -X POST`, `gh issue create`, `python -c "urllib..."`. There are two layers here with **deliberately different jobs** — and only one of them is a security boundary.
 
-Bash can still sidestep typed commit tools for external side effects: `curl -X POST`, `gh issue create`, `osascript -e 'tell application Mail...'`. We close the obvious paths with a basename denylist on the regular `bash` tool:
+**1. OS-enforced egress (the actual boundary).** With `--sandbox-driver srt`, `bash` and every process it spawns run under [srt](https://github.com/anthropic-experimental/sandbox-runtime), which enforces a network egress allowlist over the *entire process tree* (plus a cross-platform workspace write-jail). Egress to anything not on `--egress-allow` is blocked at the OS/proxy level — **regardless of how the request is spawned**: `curl`, a copied/renamed binary, `python -c urllib`, `nc`, all blocked. An empty allowlist means no network. This is the enforcement boundary.
+
+> The default driver is `seatbelt` (macOS write-jail only, egress **not** bounded). Opt into `--sandbox-driver srt` for egress enforcement. See "Security boundary" below.
+
+**2. The basename denylist (an intent nudge, not containment).** On the regular `bash` tool, commands whose first token (basename, after an optional env-var prefix) is one of:
 
 ```
 curl, wget, gh, az, mail, sendmail, osascript, git (push|commit|tag only)
 ```
 
-When `bash` is called with one of these as the first token (basename, after optional env-var prefix), it's refused with: "use `bash_commit` instead." `bash_commit` is a separate tool tagged `kind="commit"`, so it routes through the commit policy above.
+are refused with "use `bash_commit` instead." This is **not** a containment mechanism — it is bypassable by construction (`./renamed-curl`, a copied binary, `python -c urllib`). Its only job is to make the *common* commit paths require explicit `bash_commit` intent, nudging an agent reaching for `gh issue create` onto the typed, policy-gated path. Layer 1 is what actually stops exfiltration.
 
-**Slope guardrails — read before adding to the denylist:**
-- **Hard cap of 12 entries.** Frozen at 8 today. At 13, stop and reconsider the model, don't extend.
+**Slope guardrails — the denylist is frozen:**
+- **Hard cap of 12 entries, and no new entries.** It's an intent nudge; lengthening it chases a containment property it structurally cannot have. Bypasses are stopped by the egress proxy, not this list.
 - **No regex. No argument inspection** except the single `git` subcommand exception.
-- **If you want argv inspection on a second binary, build a typed `kind="commit"` tool instead.** That's why `bash_commit` exists. Don't make this file into a policy DSL.
-- **Third Umpire surfaces every `bash_commit` and commit-tool call in its verdict.** If an agent shells out to `gh` repeatedly, the answer is `gh_create_issue` as a typed commit tool, not a longer denylist.
-- The denylist is honest about what it doesn't catch: `python -c "import urllib..."`, `nc`, `ssh host 'curl ...'`. A determined-confused agent can route around it for network side effects. The point is to make *common* commit paths require explicit intent (`bash_commit`), while the OS sandbox independently prevents local file writes outside the workspace.
+- **For a real boundary on a new binary, use `--sandbox-driver srt` with an egress allowlist** — or build a typed `kind="commit"` tool. Don't grow this list into a policy DSL.
+- **Third Umpire surfaces every `bash_commit` and commit-tool call in its verdict.** If an agent shells out to `gh` repeatedly, the answer is `gh_create_issue` as a typed commit tool.
 
 ### Third Umpire output
 
@@ -536,22 +539,32 @@ mapped onto the lethal trifecta and the six secure-agent design patterns, plus
 how it compares to neighbors (predicate-secure, Cupcake, nah) — see
 [Where Boundary sits](README.md#where-boundary-sits) in the README.
 
-Boundary has two practical safety layers:
+Boundary has three practical safety layers:
 
 1. The workspace boundary controls where file tools operate.
 2. The envelope controls which paths the agent may write, append, or commit.
+3. The **sandbox driver** controls the OS containment for `bash` (`--sandbox-driver`).
 
-On macOS, shell commands run through `sandbox-exec` with local writes restricted
-to the workspace and its internal temp directory. This is a write boundary, not a
-complete security sandbox:
+**Sandbox drivers** (`--sandbox-driver`, default `seatbelt`):
+
+- `seatbelt` — macOS `sandbox-exec`; local writes restricted to the workspace + its
+  temp dir. A **write boundary only** — network egress is *not* bounded.
+- `srt` — [Anthropic sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime):
+  Seatbelt (macOS) / bubblewrap (Linux) / WFP (Windows) **plus a network egress
+  allowlist** enforced over the whole process tree. Set allowed domains with
+  `--egress-allow` (empty = no network). Requires `npm i -g @anthropic-ai/sandbox-runtime`.
+- `none` — no OS sandbox (loud, explicit opt-out).
+
+Even under `seatbelt`, the following are NOT bounded — use `srt`, a dedicated OS
+user, or a container for sensitive work:
 
 - shell commands may still read files the current OS user can read;
-- network egress is not fully blocked;
+- network egress is not bounded (use `--sandbox-driver srt --egress-allow ...`);
 - tools enabled through local adapters may expose additional capabilities;
 - commit-class tools are governed by the commit policy, but read-only tools can
   still surface sensitive data into the transcript.
 
-For sensitive work, run Boundary as a dedicated OS user or inside a container,
+For sensitive work, prefer `--sandbox-driver srt` with a tight `--egress-allow`,
 disable shell with `--no-shell`, leave web disabled unless needed, and keep
 private overlays under `~/.boundary/overlays/` rather than in the repo.
 

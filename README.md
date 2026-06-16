@@ -31,11 +31,19 @@ extra system guidance without changing the generic engine.
 
 ## Security boundary
 
-Boundary enforces a workspace write boundary and envelope write allowlist. The
-macOS shell wrapper blocks local writes outside the workspace, but it is not a
-complete sandbox: shell commands may still read files allowed by the operating
-system user, and network egress is not fully blocked. For sensitive work, run
-Boundary as a dedicated OS user or inside a container, and disable shell or web
+Boundary enforces a workspace write boundary and envelope write allowlist via a
+pluggable sandbox driver (`--sandbox-driver`):
+
+- `seatbelt` (default) — macOS write-jail; blocks local writes outside the
+  workspace, but **does not bound network egress** and reads are unrestricted.
+- `srt` — [Anthropic sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+  (Seatbelt/bubblewrap/WFP) adds an **OS-enforced network egress allowlist** over
+  the whole process tree. Set `--egress-allow <domain>` (empty = no network);
+  needs `npm i -g @anthropic-ai/sandbox-runtime`.
+- `none` — no sandbox.
+
+For sensitive work, prefer `--sandbox-driver srt` with a tight egress allowlist
+(or run as a dedicated OS user / inside a container), and disable shell or web
 tools when they are not needed.
 
 ## Where Boundary sits
@@ -55,7 +63,7 @@ addresses two-thirds of it:
 |---|---|
 | Private-data access | **Not defended** — reads are free and unbounded; the envelope bounds writes, not reads |
 | Untrusted content drives action | **Partially** — the staging pivot forces a committed thesis before deep reads/writes |
-| External communication | **Typed commits only** — commit-tool gating + write allowlist bound irreversible/outbound actions; OS-level network egress is not yet bounded |
+| External communication | **Boundable** — commit-tool gating + write allowlist bound irreversible/outbound actions; with `--sandbox-driver srt` an OS-enforced egress allowlist bounds network exfiltration across the whole process tree (default `seatbelt` driver does not) |
 
 The honest gap: an allowlisted write is itself an exfiltration channel if its
 content is tainted. Closing it is information-flow tracking — on the roadmap, not
