@@ -1,11 +1,9 @@
 """Fielding Coach — translates a loose user prompt into a structured envelope
 spec, surfaces it for human approval, then dispatches.
 
-`Stark` remains as a backwards-compatible local alias.
-
 Workflow:
     1. propose(user_prompt) -> EnvelopeProposal  (LLM-authored)
-    2. show proposal to human; accept / edit / reject
+    2. show proposal to human; accept / reject
     3. dispatch(proposal, persona_charter) -> EnvelopeRunResult
     4. grade with the Third Umpire
 """
@@ -49,9 +47,7 @@ When proposing:
   resolve before this envelope makes sense. Empty list is the common case.
 - `rationale` — 1-3 sentences on why this envelope shape.
 
-Be opinionated. The user can always edit your proposal."""
-
-STARK_SYSTEM = FIELDING_COACH_SYSTEM
+Be opinionated. The user can always reject and re-prompt."""
 
 PROPOSE_TOOL = {
     "type": "function",
@@ -155,7 +151,7 @@ class FieldingCoach:
             user_msg = "\n".join(context_blocks) + f"\n\n--- USER REQUEST ---\n{user_prompt}"
         resp = self.client.chat(
             [
-                Message(role="system", content=STARK_SYSTEM),
+                Message(role="system", content=FIELDING_COACH_SYSTEM),
                 Message(role="user", content=user_msg),
             ],
             tools=[PROPOSE_TOOL],
@@ -178,8 +174,6 @@ class FieldingCoach:
             clarifying_questions=args.get("clarifying_questions", []) or [],
         )
 
-
-Stark = FieldingCoach
 
 
 def dispatch(

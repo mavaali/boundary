@@ -16,10 +16,6 @@ Boundary runs tool-calling agents inside a pre-declared envelope. Three modes:
 
 Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend caps, ambiguity halt) and can be graded by the **Third Umpire** (property checks against the envelope, not against the agent's "quality").
 
-Backwards-compatible local aliases remain available:
-- `boundary stark` → `boundary fielding-coach`
-- `boundary fury` → `boundary third-umpire`
-
 Lives at `~/projects/boundary/`. Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
 
 ---
@@ -324,8 +320,6 @@ Grade any transcript at any time:
 boundary third-umpire ~/.boundary/transcripts/<file>.jsonl
 ```
 
-`boundary fury ...` remains as a local/backwards-compatible alias.
-
 Verdict is `PASS` / `WARN` / `FAIL`. 11 checks, severity-graded. `FAIL` exit code is 2.
 
 For envelope runs with staging enabled, Third Umpire also reports
@@ -447,7 +441,7 @@ boundary run ... --on-commit allow --commit-allow bash_commit
 ```
 
 **`boundary fielding-coach "prompt"`** (interactive planner)
-Same prompt — Fielding Coach dispatch enables shell by default, so `bash_commit` is in the registry. `boundary stark ...` remains a local/backwards-compatible alias.
+Same prompt — Fielding Coach dispatch enables shell by default, so `bash_commit` is in the registry.
 
 **`boundary schedule install <yaml>`** (headless)
 YAML must declare `on_commit` if it's anything other than the default `refuse`. Install fails on bad combinations:

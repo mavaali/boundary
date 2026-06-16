@@ -8,7 +8,7 @@ from pathlib import Path
 
 from boundary.adapters.clawpilot import load_persona
 from boundary.envelope import Envelope, EnvelopeRunner
-from boundary.fury import ThirdUmpire
+from boundary.third_umpire import ThirdUmpire
 from boundary.history import History
 from boundary.schedule import ScheduleConfig
 
@@ -114,7 +114,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     if lock_path is None:
         return {
             "run_id": None, "review_id": None, "stop_reason": "skipped_locked",
-            "fury_verdict": None, "transcript": None, "writes": 0,
+            "third_umpire_verdict": None, "transcript": None, "writes": 0,
             "tokens_in": 0, "tokens_out": 0, "dollars": 0.0, "wall_seconds": 0.0,
             "written_files": [], "error": f"another run of '{config.name}' is in progress",
         }
@@ -123,8 +123,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     history = History(db_path) if db_path else History()
     transcript_path: str | None = None
     written_files: list = []
-    fury_verdict: str | None = None
-    fury_summary: dict | None = None
+    third_umpire_verdict: str | None = None
+    third_umpire_summary: dict | None = None
     stop_reason = "error"
     iterations = 0
     writes_executed = 0
@@ -211,11 +211,11 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         if transcript_path:
             try:
                 report = ThirdUmpire.grade(transcript_path)
-                fury_verdict = report.verdict
-                fury_summary = report.summary
+                third_umpire_verdict = report.verdict
+                third_umpire_summary = report.summary
             except Exception as e:
-                fury_verdict = "ERROR"
-                fury_summary = {"error": str(e)}
+                third_umpire_verdict = "ERROR"
+                third_umpire_summary = {"error": str(e)}
 
         agent.close()
     except Exception as e:
@@ -230,7 +230,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         input_tokens=input_tokens, output_tokens=output_tokens,
         cached_input_tokens=cached_input_tokens,
         estimated_dollars=estimated_dollars, wall_seconds=wall_seconds,
-        fury_verdict=fury_verdict, fury_summary=fury_summary,
+        third_umpire_verdict=third_umpire_verdict, third_umpire_summary=third_umpire_summary,
         transcript_path=transcript_path, written_files=written_files,
         error=error_text,
     )
@@ -252,7 +252,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     _release_lock(lock_path)
     return {
         "run_id": run_id, "review_id": review_id, "stop_reason": stop_reason,
-        "fury_verdict": fury_verdict, "transcript": transcript_path,
+        "third_umpire_verdict": third_umpire_verdict, "transcript": transcript_path,
         "writes": writes_executed, "tokens_in": input_tokens, "tokens_out": output_tokens,
         "dollars": estimated_dollars, "wall_seconds": wall_seconds,
         "written_files": written_files, "error": error_text,

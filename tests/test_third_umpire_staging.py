@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 
-from boundary.fury import ThirdUmpire
+from boundary.third_umpire import ThirdUmpire
 
 
 def _write_transcript(tmp_path, envelope_events):

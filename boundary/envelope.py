@@ -41,7 +41,7 @@ from boundary.tools.registry import Tool, ToolRegistry
 #     subcommand exception below.
 #   - If you find yourself wanting argv inspection on a SECOND binary, build a
 #     typed `kind="commit"` tool instead. That's why bash_commit exists.
-#   - Fury surfaces every bash_commit / commit-tool call in its verdict. If an
+#   - The Third Umpire surfaces every bash_commit / commit-tool call in its verdict. If an
 #     agent shells out to `gh` repeatedly, the answer is a typed gh_* commit
 #     tool, NOT a longer denylist.
 # -----------------------------------------------------------------------------
@@ -725,8 +725,7 @@ class EnvelopeRunner:
                         result = f"ERROR: {type(e).__name__}: {e}"
                 # Always-on budget banner: prefix every tool_result so the agent
                 # cannot read a result without seeing remaining budget. This is
-                # the "make constraints unavoidable, not buried in setup" fix
-                # from the Uatu/Fury jugalbandi.
+                # the "make constraints unavoidable, not buried in setup" fix.
                 writes_used = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
                 appends_used = enforced._counters.get("appends_executed", 0)  # type: ignore[attr-defined]
                 ext_used = enforced._counters.get("external_calls", 0)  # type: ignore[attr-defined]
