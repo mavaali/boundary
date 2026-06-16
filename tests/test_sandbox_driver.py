@@ -6,6 +6,7 @@ loopback sink so the assertion is deterministic and needs no real network.
 """
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import threading
@@ -50,6 +51,8 @@ def test_srt_blocks_child_process_egress_under_empty_allowlist(tmp_path):
 
 def test_agent_threads_driver_to_bash_tool(tmp_path):
     # The Agent must route its sandbox_driver down to the bash tool.
+    if os.name != "posix":
+        pytest.skip("bash tool requires a POSIX shell — Windows backend not implemented")
     from boundary.agent import Agent
 
     agent = Agent(

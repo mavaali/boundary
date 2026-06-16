@@ -49,7 +49,8 @@ def test_scout_hook_event_written_for_warn(tmp_path, monkeypatch):
     assert event["schedule"] == "wiki-health"
     assert event["third_umpire_verdict"] == "WARN"
     assert event["channel"] == "teams_dm"
-    assert event["summary_file"].endswith("/scratch/wiki-health-2026-06-16.md")
+    summary = event["summary_file"].replace("\\", "/")
+    assert summary.endswith("/scratch/wiki-health-2026-06-16.md")
 
 
 def test_scout_hook_not_written_for_pass_when_warn_fail(tmp_path, monkeypatch):

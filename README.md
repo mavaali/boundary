@@ -12,7 +12,7 @@ delegate to, but not safe enough to leave unsupervised.
 **Four modes:**
 - Interactive: `boundary run --system-file <prompt.md> --task "..."`
 - Fielding Coach: `boundary fielding-coach "loose prompt" --workspace <dir>`
-- Scheduled: `boundary schedule install <yaml>` (macOS launchd)
+- Scheduled: `boundary schedule install <yaml>` (macOS launchd / Windows Task Scheduler)
 - Pipelines: `boundary pipeline-run <yaml>` for squad-planned multi-persona jobs
 
 Every envelope run can be reviewed by the **Third Umpire**: property checks against the envelope spec, not against the agent's prose quality.

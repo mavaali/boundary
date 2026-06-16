@@ -8,6 +8,39 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-16
+
+The cross-platform-scheduling milestone: headless schedules and pipelines now
+run on Windows via Task Scheduler, matching the existing macOS launchd
+support. Linux remains unsupported for headless mode (use `boundary run` or
+`boundary fielding-coach` directly).
+
+### Added
+- **Windows headless scheduling** (`boundary/win_scheduler.py`) — registers
+  `\boundary\io.boundary.schedule.<name>` tasks via `schtasks.exe` and tracks
+  them with marker files under `~/.boundary/scheduler-tasks/`. User-scope (no
+  admin elevation). Same schedule grammar as macOS: `daily HH:MM`,
+  `weekly <day> HH:MM`, `every N minutes`, `hourly`. Raw cron remains rejected
+  on both platforms.
+- **Platform dispatcher** (`boundary/scheduler.py`) — `boundary schedule
+  install`, `boundary pipeline install`, `uninstall`, and `list` now route to
+  the right backend by `sys.platform`. Linux raises a clear "use Mode 1 or 2"
+  error instead of silently failing.
+- **Windows CI** — new `selftest-windows` job in the selftest workflow runs the
+  full unit suite on `windows-latest` and verifies the `boundary` CLI starts
+  cleanly.
+- **Scheduler tests** — `tests/test_win_scheduler.py` (schtasks args mapping,
+  install/uninstall/list with mocked subprocess) and
+  `tests/test_scheduler_dispatch.py` (per-platform binding + Linux fallback).
+
+### Changed
+- **Log directory rename:** `~/.boundary/launchd-logs/` → `~/.boundary/scheduler-logs/`
+  on both platforms. Existing macOS logs stay where they are; new logs go to
+  the new path.
+- README/GUIDE: scheduling sections now describe both backends; cron-rejection
+  message is platform-neutral.
+- CLI subcommand help strings: "launchd" → "OS scheduler (launchd / schtasks)".
+
 ## [0.4.0] - 2026-06-16
 
 The packageability milestone: Boundary becomes installable as a public alpha
@@ -111,6 +144,7 @@ guarantees, and OS-enforced network egress.
 Initial Boundary release — envelope runner, Fielding Coach planner, Third Umpire
 post-run grading, headless scheduling (launchd), overlays.
 
+[0.5.0]: https://github.com/mavaali/boundary/releases/tag/v0.5.0
 [0.4.0]: https://github.com/mavaali/boundary/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mavaali/boundary/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mavaali/boundary/releases/tag/v0.2.0

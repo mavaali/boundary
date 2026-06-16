@@ -9,6 +9,8 @@ from boundary.clients import copilot
 
 
 def test_save_oauth_token_uses_private_file_mode(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("POSIX file-mode bits only — Windows ignores chmod(0o600)")
     token_path = tmp_path / "github-copilot" / "apps.json"
     monkeypatch.setattr(copilot, "APPS_JSON_PATH", token_path)
 
