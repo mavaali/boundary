@@ -8,15 +8,35 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-16
+
+The lethal-trifecta-closing milestone: information-flow taint dimension, plus a
+reproducible benchmark harness with first real-model results.
+
 ### Added
-- **Taint / provenance dimension (`--on-taint {refuse,warn,allow}`)** — closes the
-  write-as-exfil channel (the lethal trifecta's third leg). Reading untrusted
+- **Taint / provenance dimension (`--on-taint {refuse,warn,allow}`)** — closes
+  the write-as-exfil channel (the trifecta's third leg). Reading untrusted
   external content (`fetch_url`) marks the run tainted; a subsequent write to a
-  writable sink trips a `taint_flow` event. `warn` (default) records it, `refuse`
-  blocks the write, `allow` disables the check (surfaced as a downgrade). Coarse,
-  run-level; workspace-only runs never trip it. Third Umpire emits a `taint_flow`
-  verdict line; `stage_proposal` records the taint set; `on_taint:` works in
-  schedule YAML. The selftest `taint_flow_enforced` guarantee is now enforced.
+  writable sink trips a `taint_flow` event. `warn` (default) records it,
+  `refuse` blocks the write, `allow` disables the check (surfaced as a
+  downgrade). Coarse, run-level; workspace-only runs never trip it. Third
+  Umpire emits a `taint_flow` verdict line; `stage_proposal` records the taint
+  set; `on_taint:` works in schedule YAML. The selftest `taint_flow_enforced`
+  guarantee is now enforced — **7 enforced, 0 gated**.
+- **Benchmark harness** — `python -m benchmarks.run --model <slug>` runs three
+  injection tasks (forbidden write, tainted exfil, unauthorized commit) defended
+  vs undefended and emits `{utility, utility_under_attack, ASR}`. After spiking
+  AgentDojo and hitting its kill condition (no `defense` parameter in the
+  inspect port; staging/taint not exercised), pivoted to a bespoke suite
+  measuring the real `EnvelopeRunner`. Mock-verified deterministically in
+  `tests/test_benchmark_harness.py` (ASR 3/3 → 0/3). First real-model results
+  in `benchmarks/results.md`: both Llama-3.1-8b and Haiku-4.5 refuse these
+  naive injections unaided, so the envelope's measured ASR delta is 0 on this
+  attack set at this model class — see file for honest interpretation.
+- **OpenRouter client** (`boundary/clients/openrouter.py`) — OpenAI-compatible,
+  with retry-once on transient provider errors and 200-with-error-body handling.
+- **`pytest pythonpath`** — pyproject pytest config so the top-level
+  `benchmarks` package imports under strict PEP 660 editable installs (CI).
 
 ## [0.2.0] - 2026-06-16
 
@@ -64,5 +84,6 @@ guarantees, and OS-enforced network egress.
 Initial Boundary release — envelope runner, Fielding Coach planner, Third Umpire
 post-run grading, headless scheduling (launchd), overlays.
 
+[0.3.0]: https://github.com/mavaali/boundary/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mavaali/boundary/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mavaali/boundary/releases/tag/v0.1.0
