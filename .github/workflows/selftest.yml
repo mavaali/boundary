@@ -26,3 +26,35 @@ jobs:
 
       - name: Envelope selftest (fails on any guarantee regression)
         run: boundary selftest
+
+  egress:
+    # Exercises the srt driver's OS-enforced egress allowlist on Linux
+    # (bubblewrap). Separate from the fast unit job so a research-preview tool
+    # can't flake the core signal.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install bubblewrap + srt
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          npm install -g @anthropic-ai/sandbox-runtime
+
+      - name: Install package
+        run: pip install -e . pytest
+
+      - name: Egress red-team tests (srt driver)
+        run: pytest tests/redteam/test_egress.py tests/test_sandbox_driver.py -q
+
+      - name: Selftest with egress enforced
+        run: boundary selftest

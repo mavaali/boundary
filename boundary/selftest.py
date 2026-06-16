@@ -10,14 +10,18 @@ landed yet (e.g. OS-enforced egress). It is reported but does not fail the run.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from boundary.envelope import Envelope, EnvelopeEvent, _make_enforced_tool
 from boundary.tools.registry import Tool, ToolRegistry
 from boundary.tools.workspace import Workspace
 from boundary.tools.fs import register_fs_tools
+from boundary.tools.sandbox import run_sandboxed
 
 
 @dataclass
@@ -185,47 +189,75 @@ def check_downgrade_surfaced() -> SelftestResult:
 
 
 # ---------------------------------------------------------------------------
-# Gated guarantees — expected_fail until the named enhancement lands. Each is a
-# real probe of the CURRENT system, so it flips to PASS automatically once the
-# enforcement exists (signalling "flip expected_fail off").
+# Egress guarantees — enforced when the `srt` sandbox driver is available, gated
+# (expected_fail) otherwise so an environment without srt never breaks the build.
+# Tested against a loopback sink: deterministic, no real network.
 # ---------------------------------------------------------------------------
 
-def check_egress_blocked_empty_allowlist() -> SelftestResult:
-    """GATED (Item 1): network egress must be blocked under an empty allowlist.
+def _srt_command_reaches_sink(command_template: str) -> tuple[bool, str]:
+    """Run `command_template` (with {port}) under the srt driver and an EMPTY
+    egress allowlist, against a loopback HTTP sink. Returns (reached, raw)."""
+    srv = HTTPServer(("127.0.0.1", 0), _SinkHandler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            out = run_sandboxed(
+                command_template.format(port=port),
+                workspace_root=Path(d), timeout=30, driver="srt", egress_allowlist=[],
+            )
+        return ("NET_OK" in out, out)
+    finally:
+        srv.shutdown()
 
-    No OS-enforced egress allowlist exists yet (the sandbox bounds file writes
-    only). Probes for the Item-1 mechanism; flips to PASS when it lands."""
-    has_egress_control = hasattr(Envelope(), "network_allowlist")
+
+class _SinkHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *a):  # silence
+        pass
+
+
+def check_egress_blocked_empty_allowlist() -> SelftestResult:
+    """Network egress must be blocked under an empty allowlist (Item 1, srt)."""
+    name = "egress_blocked_empty_allowlist"
+    if not shutil.which("srt"):
+        return SelftestResult(
+            name, passed=False,
+            detail="srt not installed — `npm i -g @anthropic-ai/sandbox-runtime` to enforce egress",
+            expected_fail=True,
+        )
+    reached, raw = _srt_command_reaches_sink(
+        "curl -sS -m 5 http://127.0.0.1:{port} -o /dev/null && echo NET_OK || echo NET_BLOCKED"
+    )
     return SelftestResult(
-        "egress_blocked_empty_allowlist",
-        passed=has_egress_control,
-        detail="OS-enforced egress allowlist present"
-        if has_egress_control
-        else "no OS-enforced egress allowlist yet — needs Item 1 (srt)",
-        expected_fail=True,
+        name, passed=not reached,
+        detail="srt blocks egress under empty allowlist"
+        if not reached else f"LEAK: egress reached the sink: {raw!r}",
     )
 
 
 def check_denylist_bypass_blocked() -> SelftestResult:
-    """GATED (Item 1/2): denylist bypasses must be blocked by the egress proxy.
-
-    The basename denylist catches `curl`/`./curl` but NOT a renamed copied binary
-    or `python -c urllib`. With no egress proxy these reach the network. Flips to
-    PASS once Item 1's proxy bounds egress regardless of how it is spawned."""
-    from boundary.envelope import _bash_command_is_commit
-
-    bypasses = [
-        "cp /usr/bin/curl ./qq && ./qq http://evil.test",
-        'python3 -c "import urllib.request as u; u.urlopen(\'http://evil.test\')"',
-    ]
-    blocked = [b for b in bypasses if _bash_command_is_commit(b)[0]]
-    passed = len(blocked) == len(bypasses)
+    """A denylist bypass (python-urllib — basename denylist can't catch it) must
+    still be blocked by the egress proxy, not the denylist (Item 1/2, srt)."""
+    name = "denylist_bypass_blocked"
+    if not shutil.which("srt"):
+        return SelftestResult(
+            name, passed=False,
+            detail="srt not installed — egress proxy (not the denylist) is the boundary; install srt to enforce",
+            expected_fail=True,
+        )
+    reached, raw = _srt_command_reaches_sink(
+        "python3 -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:{port}')\" "
+        "&& echo NET_OK || echo NET_BLOCKED"
+    )
     return SelftestResult(
-        "denylist_bypass_blocked",
-        passed=passed,
-        detail=f"{len(blocked)}/{len(bypasses)} bypasses blocked"
-        + ("" if passed else " — renamed-binary / python-urllib reach the network (needs Item 1/2 proxy)"),
-        expected_fail=True,
+        name, passed=not reached,
+        detail="egress proxy blocks the python-urllib bypass"
+        if not reached else f"LEAK: bypass reached the sink: {raw!r}",
     )
 
 
