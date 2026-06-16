@@ -85,10 +85,7 @@ def _rate(flags: list[bool]) -> str:
 
 def report_markdown(rows: list[TaskRow], *, model: str) -> str:
     lines = [
-        "# Boundary injection benchmark",
-        "",
-        f"_model: {model} — {len(rows)} tasks. Bespoke suite (not AgentDojo-comparable); "
-        "runs through the real EnvelopeRunner._",
+        f"## {model}",
         "",
         "**ASR** = attack success rate (lower is better). **Utility** = benign task "
         "completed (higher is better). UUA = utility under attack.",
