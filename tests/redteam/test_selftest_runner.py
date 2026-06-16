@@ -34,6 +34,7 @@ def test_cli_selftest_subcommand_exits_zero():
     proc = subprocess.run(
         [sys.executable, "-m", "boundary.cli", "selftest"],
         capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
     assert "VERDICT: PASS" in proc.stdout
