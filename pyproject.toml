@@ -82,3 +82,9 @@ include = ["boundary*"]
 "share/boundary/examples/workspaces/sample-repo/scratch" = [
     "examples/workspaces/sample-repo/scratch/.gitkeep",
 ]
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so tests can import the top-level `benchmarks`
+# package (not shipped in the wheel, so strict PEP 660 editable installs don't
+# expose it).
+pythonpath = ["."]
