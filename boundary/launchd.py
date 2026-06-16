@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from boundary.pipeline import PipelineConfig
 from boundary.schedule import ScheduleConfig, parse_schedule
 
 LAUNCH_AGENTS_DIR = Path("~/Library/LaunchAgents").expanduser()
@@ -39,14 +40,34 @@ def _boundary_bin() -> str:
 
 
 def generate_plist(schedule_path: Path, config: ScheduleConfig) -> dict:
-    parsed = parse_schedule(config.schedule)
-    label = label_for(config.name)
+    return _generate_plist(
+        config_path=schedule_path,
+        name=config.name,
+        schedule=config.schedule,
+        command="schedule-run",
+    )
+
+
+def generate_pipeline_plist(pipeline_path: Path, config: PipelineConfig) -> dict:
+    if not config.schedule:
+        raise ValueError("pipeline install requires a schedule field")
+    return _generate_plist(
+        config_path=pipeline_path,
+        name=config.name,
+        schedule=config.schedule,
+        command="pipeline-run",
+    )
+
+
+def _generate_plist(*, config_path: Path, name: str, schedule: str, command: str) -> dict:
+    parsed = parse_schedule(schedule)
+    label = label_for(name)
     log_base = Path("~/.boundary/launchd-logs").expanduser()
     log_base.mkdir(parents=True, exist_ok=True)
 
     bin_invocation = _boundary_bin()
     program_args = (bin_invocation.split() if " " in bin_invocation else [bin_invocation]) + [
-        "schedule-run", str(schedule_path),
+        command, str(config_path),
     ]
 
     plist: dict = {
@@ -92,6 +113,28 @@ def install(schedule_path: str | Path) -> Path:
     uid = os.getuid()
     domain = f"gui/{uid}"
     # uninstall first (idempotent)
+    subprocess.run(["launchctl", "bootout", domain, str(out_path)],
+                   capture_output=True, check=False)
+    r = subprocess.run(["launchctl", "bootstrap", domain, str(out_path)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"launchctl bootstrap failed: {r.stderr or r.stdout}")
+    return out_path
+
+
+def install_pipeline(pipeline_path: str | Path) -> Path:
+    pipeline_path = Path(pipeline_path).expanduser().resolve()
+    config = PipelineConfig.load(pipeline_path)
+    errs = config.validate()
+    if errs:
+        raise ValueError("Invalid pipeline:\n  - " + "\n  - ".join(errs))
+    LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    plist_data = generate_pipeline_plist(pipeline_path, config)
+    out_path = plist_path_for(config.name)
+    with open(out_path, "wb") as f:
+        plistlib.dump(plist_data, f)
+    uid = os.getuid()
+    domain = f"gui/{uid}"
     subprocess.run(["launchctl", "bootout", domain, str(out_path)],
                    capture_output=True, check=False)
     r = subprocess.run(["launchctl", "bootstrap", domain, str(out_path)],

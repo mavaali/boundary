@@ -80,6 +80,20 @@ def main(argv: list[str] | None = None) -> int:
     srun.add_argument("path", help="path to schedule.yaml")
     srun.add_argument("--verbose", "-v", action="store_true")
 
+    pipe = sub.add_parser("pipeline", help="install/uninstall/list multi-step headless pipelines")
+    pipe_sub = pipe.add_subparsers(dest="pipeline_cmd", required=True)
+    pi = pipe_sub.add_parser("install", help="install a pipeline YAML as a launchd LaunchAgent")
+    pi.add_argument("path", help="path to pipeline.yaml")
+    pu = pipe_sub.add_parser("uninstall", help="remove an installed pipeline by name")
+    pu.add_argument("name")
+    pipe_sub.add_parser("list", help="list installed boundary schedules and pipelines")
+    pv = pipe_sub.add_parser("validate", help="parse a pipeline YAML and print what would run")
+    pv.add_argument("path")
+
+    prun = sub.add_parser("pipeline-run", help="execute a multi-step pipeline headlessly")
+    prun.add_argument("path", help="path to pipeline.yaml")
+    prun.add_argument("--verbose", "-v", action="store_true")
+
     hist = sub.add_parser("history", help="show recent runs")
     hist.add_argument("--limit", type=int, default=20)
     hist.add_argument("--schedule", default=None)
@@ -296,6 +310,101 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[error] {out['error'][:500]}")
             return 2
         return 0
+
+    if args.cmd == "pipeline":
+        from boundary.pipeline import PipelineConfig
+        from boundary.schedule import parse_schedule
+        from boundary import launchd as _lc
+        if args.pipeline_cmd == "install":
+            installed = _lc.install_pipeline(args.path)
+            print(f"[ok] installed {installed}")
+            print("    Logs: ~/.boundary/launchd-logs/")
+            return 0
+        if args.pipeline_cmd == "uninstall":
+            out = _lc.uninstall(args.name)
+            print(f"[ok] removed {out}")
+            return 0
+        if args.pipeline_cmd == "list":
+            paths = _lc.list_installed()
+            if not paths:
+                print("(no schedules or pipelines installed)")
+                return 0
+            for p_ in paths:
+                print(f"  {p_.name}")
+            return 0
+        if args.pipeline_cmd == "validate":
+            cfg = PipelineConfig.load(args.path)
+            print(f"name:           {cfg.name}")
+            print(f"workspace:      {cfg.workspace}")
+            if cfg.schedule:
+                print(f"schedule:       {cfg.schedule}  -> {parse_schedule(cfg.schedule)}")
+            else:
+                print("schedule:       (manual)")
+            print(f"stop_on:        {cfg.stop_on}")
+            print(f"planning:       {'enabled' if cfg.planning.enabled else 'disabled'}")
+            if cfg.planning.enabled:
+                print(f"  output_path:  {cfg.planning.output_path}")
+                print(f"  max_writes:   {cfg.planning.max_writes}  min: {cfg.planning.min_writes}  iters: {cfg.planning.max_iters}")
+                print(f"  on_commit:    {cfg.planning.on_commit}  on_taint={cfg.planning.on_taint}")
+            print(f"steps:          {len(cfg.steps)}")
+            for idx, step in enumerate(cfg.steps, start=1):
+                step_cfg = cfg.to_schedule_config(step)
+                print(f"  {idx}. {step.name} ({step.persona})")
+                print(f"     writable_paths: {step_cfg.rendered_writable_paths()}")
+                print(f"     max_writes:     {step_cfg.max_writes}  min: {step_cfg.min_writes}  iters: {step_cfg.max_iters}")
+                print(f"     on_ambiguity:   {step_cfg.on_ambiguity}")
+                print(f"     on_commit:      {step_cfg.on_commit}  allowlist={step_cfg.commit_allowlist}")
+            errs = cfg.validate()
+            if errs:
+                print("pipeline errors:")
+                for e in errs:
+                    print(f"  - {e}")
+                return 2
+            return 0
+        return 1
+
+    if args.cmd == "pipeline-run":
+        from boundary.pipeline import PipelineConfig, run_pipeline
+        cfg = PipelineConfig.load(args.path)
+        if not cfg.enabled:
+            print(f"[skip] {cfg.name} is disabled")
+            return 0
+        errs = cfg.validate()
+        if errs:
+            print("pipeline errors:")
+            for e in errs:
+                print(f"  - {e}")
+            return 2
+        print(f"[pipeline] {cfg.name} ({len(cfg.steps)} steps @ {cfg.workspace})")
+        out = run_pipeline(cfg, verbose=args.verbose)
+        planning = out.get("planning")
+        if planning:
+            print(
+                f"[squad-plan] run_id={planning['run_id']} "
+                f"stop={planning['stop_reason']} umpire={planning['third_umpire_verdict']} "
+                f"writes={planning['writes']} ${planning['dollars']:.4f} "
+                f"{planning['wall_seconds']:.1f}s"
+            )
+            if planning.get("plan_path"):
+                print(f"[squad-plan] {planning['plan_path']}")
+            if planning.get("error"):
+                print(f"[error] {planning['error'][:500]}")
+        for step in out["steps"]:
+            print(
+                f"[step] {step['step']} ({step['persona']}) "
+                f"run_id={step['run_id']} stop={step['stop_reason']} "
+                f"umpire={step['third_umpire_verdict']} writes={step['writes']} "
+                f"${step['dollars']:.4f} {step['wall_seconds']:.1f}s"
+            )
+            if step.get("review_id"):
+                print(f"[review] {step['step']} queued as review_id={step['review_id']} — see `boundary review-queue list`")
+            if step.get("event_path"):
+                print(f"[event] {step['event_path']}")
+            if step.get("error"):
+                print(f"[error] {step['error'][:500]}")
+        print(f"[done] pipeline={out['pipeline']} stop={out['stop_reason']} {out['wall_seconds']:.1f}s")
+        failed = out.get("stop_reason") == "planning_failed" or any(step.get("error") for step in out["steps"])
+        return 2 if failed else 0
 
     if args.cmd == "history":
         from boundary.history import History

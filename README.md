@@ -9,10 +9,11 @@ read, what they may write, when they must stage a thesis, and how the run gets
 reviewed afterward. It is for the moment when a coding agent is useful enough to
 delegate to, but not safe enough to leave unsupervised.
 
-**Three modes:**
+**Four modes:**
 - Interactive: `boundary run --system-file <prompt.md> --task "..."`
 - Fielding Coach: `boundary fielding-coach "loose prompt" --workspace <dir>`
 - Scheduled: `boundary schedule install <yaml>` (macOS launchd)
+- Pipelines: `boundary pipeline-run <yaml>` for squad-planned multi-persona jobs
 
 Every envelope run can be reviewed by the **Third Umpire**: property checks against the envelope spec, not against the agent's prose quality.
 
@@ -111,6 +112,7 @@ rather than from scratch. That is Boundary's differentiator.
 - Prompt files for research, repo review, doc maintenance, and release notes
 - A tiny sample workspace you can safely let agents inspect and write into
 - Schedule YAMLs for daily/weekly headless runs
+- Pipeline YAMLs for multi-persona runs
 - A sample overlay that maps role names to local prompt files
 
 ## Quick start
