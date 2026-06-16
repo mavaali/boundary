@@ -66,9 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     fc.add_argument("--verbose", "-v", action="store_true")
 
     # Phase 3: schedules
-    sched_inst = sub.add_parser("schedule", help="install/uninstall/list scheduled headless runs (launchd)")
+    sched_inst = sub.add_parser("schedule", help="install/uninstall/list scheduled headless runs (OS scheduler)")
     sched_sub = sched_inst.add_subparsers(dest="schedule_cmd", required=True)
-    si = sched_sub.add_parser("install", help="install a schedule YAML as a launchd LaunchAgent")
+    si = sched_sub.add_parser("install", help="install a schedule YAML on the OS scheduler (launchd / schtasks)")
     si.add_argument("path", help="path to schedule.yaml")
     su = sched_sub.add_parser("uninstall", help="remove an installed schedule by name")
     su.add_argument("name")
@@ -76,13 +76,13 @@ def main(argv: list[str] | None = None) -> int:
     sv = sched_sub.add_parser("validate", help="parse a schedule YAML and print what would be installed")
     sv.add_argument("path")
 
-    srun = sub.add_parser("schedule-run", help="execute a schedule headlessly (used by launchd, also runnable manually)")
+    srun = sub.add_parser("schedule-run", help="execute a schedule headlessly (used by the OS scheduler, also runnable manually)")
     srun.add_argument("path", help="path to schedule.yaml")
     srun.add_argument("--verbose", "-v", action="store_true")
 
     pipe = sub.add_parser("pipeline", help="install/uninstall/list multi-step headless pipelines")
     pipe_sub = pipe.add_subparsers(dest="pipeline_cmd", required=True)
-    pi = pipe_sub.add_parser("install", help="install a pipeline YAML as a launchd LaunchAgent")
+    pi = pipe_sub.add_parser("install", help="install a pipeline YAML on the OS scheduler (launchd / schtasks)")
     pi.add_argument("path", help="path to pipeline.yaml")
     pu = pipe_sub.add_parser("uninstall", help="remove an installed pipeline by name")
     pu.add_argument("name")
@@ -251,11 +251,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "schedule":
         from boundary.schedule import ScheduleConfig, parse_schedule
-        from boundary import launchd as _lc
+        from boundary import scheduler as _lc
         if args.schedule_cmd == "install":
             installed = _lc.install(args.path)
             print(f"[ok] installed {installed}")
-            print("    Logs: ~/.boundary/launchd-logs/")
+            print("    Logs: ~/.boundary/scheduler-logs/")
             return 0
         if args.schedule_cmd == "uninstall":
             out = _lc.uninstall(args.name)
@@ -314,11 +314,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "pipeline":
         from boundary.pipeline import PipelineConfig
         from boundary.schedule import parse_schedule
-        from boundary import launchd as _lc
+        from boundary import scheduler as _lc
         if args.pipeline_cmd == "install":
             installed = _lc.install_pipeline(args.path)
             print(f"[ok] installed {installed}")
-            print("    Logs: ~/.boundary/launchd-logs/")
+            print("    Logs: ~/.boundary/scheduler-logs/")
             return 0
         if args.pipeline_cmd == "uninstall":
             out = _lc.uninstall(args.name)

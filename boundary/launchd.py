@@ -62,7 +62,7 @@ def generate_pipeline_plist(pipeline_path: Path, config: PipelineConfig) -> dict
 def _generate_plist(*, config_path: Path, name: str, schedule: str, command: str) -> dict:
     parsed = parse_schedule(schedule)
     label = label_for(name)
-    log_base = Path("~/.boundary/launchd-logs").expanduser()
+    log_base = Path("~/.boundary/scheduler-logs").expanduser()
     log_base.mkdir(parents=True, exist_ok=True)
 
     bin_invocation = _boundary_bin()

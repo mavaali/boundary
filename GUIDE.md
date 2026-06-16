@@ -12,7 +12,7 @@ Boundary runs tool-calling agents inside a pre-declared envelope. Three modes:
 
 1. **Interactive** (`boundary run`) — you hand it a persona + task, it runs once
 2. **Fielding Coach** (`boundary fielding-coach`) — loose prompt → Fielding Coach proposes an envelope → you approve → execute
-3. **Scheduled** (`boundary schedule install ...`) — YAML config → launchd LaunchAgent → runs headless on schedule
+3. **Scheduled** (`boundary schedule install ...`) — YAML config → OS scheduler (launchd on macOS, Task Scheduler on Windows) → runs headless on schedule
 4. **Pipelines** (`boundary pipeline-run ...`) — one squad-level plan → sequential bounded persona runs
 
 Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend caps, ambiguity halt) and can be graded by the **Third Umpire** (property checks against the envelope, not against the agent's "quality").
@@ -150,7 +150,7 @@ boundary pipeline validate examples/pipelines/squad-docs-health.yaml
 boundary pipeline-run examples/pipelines/squad-docs-health.yaml --verbose
 ```
 
-Install on macOS launchd:
+Install on the OS scheduler (launchd on macOS, Task Scheduler on Windows):
 
 ```bash
 boundary pipeline install examples/pipelines/squad-docs-health.yaml
@@ -356,7 +356,7 @@ Runs it now. Records the run in history. Same envelope + Third Umpire enforcemen
 boundary schedule install path/to/your-schedule.yaml
 ```
 
-This writes a `~/Library/LaunchAgents/io.boundary.schedule.<name>.plist` and bootstraps it into launchd. Survives reboot.
+On macOS this writes a `~/Library/LaunchAgents/io.boundary.schedule.<name>.plist` and bootstraps it into launchd. On Windows it registers a task `\boundary\io.boundary.schedule.<name>` via `schtasks.exe` and tracks it with a marker file under `~/.boundary/scheduler-tasks/`. Both survive reboot. Linux is not supported in this release.
 
 ### Manage installed schedules
 
@@ -365,7 +365,7 @@ boundary schedule list                          # show what's installed
 boundary schedule uninstall weekly-coverage     # remove (by schedule name)
 ```
 
-Logs go to `~/.boundary/launchd-logs/io.boundary.schedule.<name>.{out,err}.log`.
+Logs go to `~/.boundary/scheduler-logs/io.boundary.schedule.<name>.{out,err}.log` on both platforms.
 
 More schedule starters live in `examples/schedules/`:
 
@@ -384,7 +384,7 @@ More schedule starters live in `examples/schedules/`:
 | `"every 2h"` / `"every 30m"` | interval |
 | `"daily 09:00"` | every day at 09:00 |
 | `"weekly mon 09:00"` | every Monday at 09:00 (mon/tue/wed/thu/fri/sat/sun) |
-| `"cron:0 9 * * 1"` | raw cron — **not supported on macOS** (launchd doesn't speak cron) |
+| `"cron:0 9 * * 1"` | raw cron — **not supported** (neither launchd nor schtasks accept cron syntax) |
 
 ### Template substitution in YAML
 
@@ -401,10 +401,10 @@ Works in `writable_paths` and inside `task`. **Use `{date}` in writable_paths** 
 | Value | Behavior |
 |---|---|
 | `queue` (default) | Agent's `ask_human()` halts loop. Question + transcript queued to DB. You handle via `review-queue`. |
-| `fail` | Exit non-zero. launchd captures in stderr log. |
+| `fail` | Exit non-zero. The OS scheduler captures in stderr log. |
 | `best_effort` | Injects "no human available, label assumptions [HYPOTHESIS], proceed" into system prompt. Agent never calls `ask_human`. |
 
-Use `queue` for anything you care about. Use `best_effort` for fully automated content (a daily summary email that should always send). Use `fail` if you want launchd to surface the failure loudly.
+Use `queue` for anything you care about. Use `best_effort` for fully automated content (a daily summary email that should always send). Use `fail` if you want the OS scheduler to surface the failure loudly.
 
 ### Run-lock
 
@@ -784,8 +784,9 @@ chmod 600 ~/.config/github-copilot/apps.json
 | Transcripts | `~/.boundary/transcripts/*.jsonl` |
 | Run history DB | `~/.boundary/history.db` |
 | Per-schedule locks | `~/.boundary/locks/<name>.lock` |
-| launchd plists | `~/Library/LaunchAgents/io.boundary.schedule.*.plist` |
-| launchd logs | `~/.boundary/launchd-logs/*.log` |
+| Scheduler entries (macOS) | `~/Library/LaunchAgents/io.boundary.schedule.*.plist` |
+| Scheduler entries (Windows) | `\boundary\io.boundary.schedule.*` task + marker `~/.boundary/scheduler-tasks/*.task` |
+| Scheduler logs | `~/.boundary/scheduler-logs/*.log` |
 | Bundled examples | `<install-prefix>/share/boundary/examples/` (pip/pipx data files) or `<clone>/examples/` |
 
 ---
