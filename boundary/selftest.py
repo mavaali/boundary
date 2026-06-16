@@ -11,6 +11,7 @@ landed yet (e.g. OS-enforced egress). It is reported but does not fail the run.
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -326,6 +327,14 @@ def run_selftest(verbose: bool = True) -> int:
     regressions = [r for r in results if not r.passed and not r.expected_fail]
 
     if verbose:
+        # Windows consoles default to cp1252 which can't encode the
+        # status emojis below. Reconfigure stdout to UTF-8 so the
+        # selftest output renders cleanly on every platform; fall back
+        # to replacement chars on the rare console where that fails.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
         print("# boundary selftest\n")
         for r in results:
             mark = {"PASS": "✅", "FAIL": "❌", "xfail": "⚠️", "XPASS": "🟡"}[r.status]

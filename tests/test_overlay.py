@@ -41,4 +41,4 @@ def test_repo_sample_overlay_resolves_by_name():
 
     assert overlay.name == "sample"
     assert overlay.resolve_role("repo-reviewer").name == "repo-reviewer.md"
-    assert overlay.workspace_or(None).endswith("examples/workspaces/sample-repo")
+    assert overlay.workspace_or(None).replace("\\", "/").endswith("examples/workspaces/sample-repo")
