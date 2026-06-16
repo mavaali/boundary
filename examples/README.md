@@ -13,6 +13,7 @@ source .venv/bin/activate
 |---|---|
 | `prompts/` | Reusable system prompts for common agent roles |
 | `schedules/` | Headless schedule YAML templates |
+| `pipelines/` | Multi-persona pipeline YAML templates with a squad-planning gate |
 | `overlays/sample/` | A portable overlay that maps role names to prompts |
 | `workspaces/sample-repo/` | A tiny safe workspace for first runs |
 | `hello_world.py` | Minimal Python API smoke example |
@@ -95,11 +96,28 @@ Install only after editing `workspace`, `persona`, caps, and notification policy
 boundary schedule install examples/schedules/weekly-coverage.yaml
 ```
 
-## 5. Python API
+## 5. Pipelines
+
+Pipelines add one shared squad-planning run before the individual persona runs.
+The planner writes a squad plan, Third Umpire grades it, and if the plan does
+not fail, each downstream persona receives it before its own enforced
+`stage_proposal`.
+
+```bash
+boundary pipeline validate examples/pipelines/squad-docs-health.yaml
+boundary pipeline-run examples/pipelines/squad-docs-health.yaml --verbose
+```
+
+Install only after editing `workspace`, personas, writable paths, and caps:
+
+```bash
+boundary pipeline install examples/pipelines/squad-docs-health.yaml
+```
+
+## 6. Python API
 
 ```bash
 python examples/hello_world.py
 ```
 
 Use the CLI examples first. The Python API is best when embedding Boundary in another tool.
-

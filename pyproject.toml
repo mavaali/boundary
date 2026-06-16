@@ -55,6 +55,9 @@ include = ["boundary*"]
     "examples/schedules/weekly-coverage.yaml",
     "examples/schedules/weekly-risk-review.yaml",
 ]
+"share/boundary/examples/pipelines" = [
+    "examples/pipelines/squad-docs-health.yaml",
+]
 "share/boundary/examples/workspaces/sample-repo" = [
     "examples/workspaces/sample-repo/README.md",
 ]

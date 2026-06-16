@@ -13,6 +13,7 @@ Boundary runs tool-calling agents inside a pre-declared envelope. Three modes:
 1. **Interactive** (`boundary run`) — you hand it a persona + task, it runs once
 2. **Fielding Coach** (`boundary fielding-coach`) — loose prompt → Fielding Coach proposes an envelope → you approve → execute
 3. **Scheduled** (`boundary schedule install ...`) — YAML config → launchd LaunchAgent → runs headless on schedule
+4. **Pipelines** (`boundary pipeline-run ...`) — one squad-level plan → sequential bounded persona runs
 
 Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend caps, ambiguity halt) and can be graded by the **Third Umpire** (property checks against the envelope, not against the agent's "quality").
 
@@ -41,6 +42,89 @@ boundary copilot models           # lists everything your subscription allows
 ```
 
 Default model is `claude-sonnet-4.5`. Override with `--model claude-opus-4.7` etc.
+
+---
+
+## Mode 4 — Pipelines (squad plan, then persona runs)
+
+Use pipelines when one agent is not enough and the work needs a shared plan
+before execution. A pipeline can run several personas from
+`<workspace>/.squad/agents/<persona>/charter.md`.
+
+The important difference from schedules:
+
+1. Boundary first runs a built-in **Squad Planner** inside its own envelope.
+2. The planner sees the selected persona charters and writes one squad plan.
+3. Third Umpire grades the planning run.
+4. If the plan does not fail, each persona step runs inside its own normal Boundary envelope.
+5. Each step receives the squad plan and must cite it in its own `stage_proposal`.
+
+That means pipelines have two layers of staging:
+
+| Layer | What is staged |
+|---|---|
+| Squad planning | Shared objective, persona lanes, evidence plan, handoffs, kill criteria |
+| Persona step | That persona's answer-first thesis and write plan |
+
+Minimal pipeline:
+
+```yaml
+name: squad-docs-health
+schedule: "daily 09:00"
+workspace: examples/workspaces/sample-repo
+stop_on: fail
+
+planning:
+  enabled: true
+  output_path: scratch/docs-health-squad-plan-{date}.md
+  envelope:
+    max_writes: 1
+    min_writes: 1
+    require_staging: true
+    max_unstaged_reads: 3
+    max_iters: 20
+  on_commit: refuse
+  on_taint: warn
+
+defaults:
+  envelope:
+    max_writes: 1
+    min_writes: 1
+    require_staging: true
+    max_unstaged_reads: 3
+    max_iters: 25
+  on_commit: refuse
+
+steps:
+  - name: repo-review
+    persona: repo-reviewer
+    envelope:
+      writable_paths:
+        - scratch/docs-health-review-{date}.md
+    task: |
+      Review README.md and docs/product-notes.md for one concrete repo-health issue.
+
+  - name: docs-maintenance
+    persona: docs-maintainer
+    envelope:
+      writable_paths:
+        - scratch/docs-health-maintenance-{date}.md
+    task: |
+      Review the squad plan and repo-review report, then inspect docs for drift.
+```
+
+Validate and run:
+
+```bash
+boundary pipeline validate examples/pipelines/squad-docs-health.yaml
+boundary pipeline-run examples/pipelines/squad-docs-health.yaml --verbose
+```
+
+Install on macOS launchd:
+
+```bash
+boundary pipeline install examples/pipelines/squad-docs-health.yaml
+```
 
 ---
 

@@ -1,0 +1,74 @@
+name: squad-docs-health
+schedule: "daily 09:00"
+workspace: examples/workspaces/sample-repo
+stop_on: fail
+
+planning:
+  enabled: true
+  output_path: scratch/docs-health-squad-plan-{date}.md
+  envelope:
+    max_writes: 1
+    min_writes: 1
+    require_staging: true
+    max_unstaged_reads: 3
+    max_iters: 20
+    max_dollars: 0.25
+    max_wall_seconds: 600
+  on_ambiguity: queue
+  on_commit: refuse
+  on_taint: warn
+
+defaults:
+  envelope:
+    max_writes: 1
+    min_writes: 1
+    require_staging: true
+    max_unstaged_reads: 3
+    max_iters: 20
+    max_dollars: 0.25
+    max_wall_seconds: 600
+  on_ambiguity: queue
+  on_commit: refuse
+
+notify: digest_daily
+
+steps:
+  - name: repo-review
+    persona: repo-reviewer
+    envelope:
+      writable_paths:
+        - scratch/docs-health-review-{date}.md
+    task: |
+      Review README.md, docs/product-notes.md, and source files for one
+      documentation or repo-health issue that has concrete evidence.
+
+      Do not use bash. Use read_file, glob, grep, and count_matches only for file
+      inspection. Stage a thesis before deep reads.
+
+      Write a concise markdown report with:
+      ## Verdict
+      PASS/WARN/FAIL with one-sentence rationale.
+
+      ## Fix List
+      A table of concrete issues, evidence paths, and the smallest safe fix.
+
+  - name: docs-maintenance
+    persona: docs-maintainer
+    envelope:
+      writable_paths:
+        - scratch/docs-health-maintenance-{date}.md
+    task: |
+      Review the squad plan and the repo-review report if present, then inspect
+      README.md and docs/product-notes.md for stale wording, missing setup steps,
+      or cross-reference drift.
+
+      Do not use bash. Use read_file, glob, grep, and count_matches only for file
+      inspection. Stage a thesis before deep reads.
+
+      Write a concise markdown report with:
+      ## Verdict
+      PASS/WARN/FAIL with one-sentence rationale.
+
+      ## Fix List
+      A table of documentation maintenance issues, evidence paths, and the
+      smallest safe fix.
