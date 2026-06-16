@@ -97,6 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     tu.add_argument("transcript", help="path to a JSONL transcript")
 
+    sub.add_parser(
+        "selftest",
+        help="run adversarial fixtures asserting the envelope's guarantees (exit non-zero on regression)",
+    )
+
     overlays = sub.add_parser("overlays", help="list/show available overlays")
     overlays_sub = overlays.add_subparsers(dest="overlays_cmd", required=True)
     overlays_sub.add_parser("list", help="list installed overlays")
@@ -281,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "history":
         from boundary.history import History
-        import datetime as _dt
+        from boundary.third_umpire import downgrade_tags
+        import datetime as _dt, json as _json
         h = History()
         rows = h.list_runs(limit=args.limit, schedule_name=args.schedule)
         if not rows:
@@ -290,9 +296,19 @@ def main(argv: list[str] | None = None) -> int:
         for r in rows:
             ts = _dt.datetime.fromtimestamp(r["started_at"]).strftime("%Y-%m-%d %H:%M")
             verdict = (r["third_umpire_verdict"] or "-")
+            try:
+                summary = _json.loads(r["third_umpire_summary_json"] or "{}")
+            except (ValueError, TypeError):
+                summary = {}
+            tags = downgrade_tags(
+                require_staging=summary.get("require_staging"),
+                on_commit=summary.get("on_commit"),
+                on_taint=summary.get("on_taint"),
+            )
+            downgrade = f"  downgrade={','.join(tags)}" if tags else ""
             print(f"  {r['id']:4d}  {ts}  {r['schedule_name'] or '(adhoc)':30s} {r['persona'] or '-':10s} "
                   f"stop={r['stop_reason']:14s} umpire={verdict:5s} "
-                  f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s")
+                  f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s{downgrade}")
         return 0
 
     if args.cmd == "review-queue":
@@ -323,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
         report = ThirdUmpire.grade(args.transcript)
         print(report.markdown())
         return 0 if report.verdict != "FAIL" else 2
+
+    if args.cmd == "selftest":
+        from boundary.selftest import run_selftest
+        return run_selftest()
 
     if args.cmd == "copilot":
         from boundary.clients.copilot import (

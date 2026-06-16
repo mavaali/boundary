@@ -28,6 +28,22 @@ UNGROUNDED_NUMBER_RX = re.compile(
 )
 
 
+def downgrade_tags(require_staging=None, on_commit=None, on_taint=None) -> list[str]:
+    """Names of guardrails an operator disabled, for the verdict and history.
+
+    `require_staging is False` (not just falsy) so an unknown value — e.g. a
+    transcript with no envelope_start — is never mis-flagged as a downgrade.
+    """
+    tags: list[str] = []
+    if require_staging is False:
+        tags.append("staging_gate=off")
+    if on_commit == "allow":
+        tags.append("on_commit=allow")
+    if on_taint == "allow":
+        tags.append("on_taint=allow")
+    return tags
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -364,6 +380,22 @@ class ThirdUmpire:
                     f"If the agent legitimately needs these, build a typed kind='commit' tool — "
                     f"don't extend the denylist."
                 ),
+                severity="warn",
+            ))
+
+        # Check 13: envelope downgrades — guardrails the operator disabled.
+        # A run that turned off a gate must be visibly distinct from one that
+        # never needed it.
+        downgrades = downgrade_tags(
+            require_staging=(envelope_start or {}).get("require_staging"),
+            on_commit=(envelope_end or {}).get("on_commit"),
+            on_taint=(envelope_end or {}).get("on_taint"),
+        )
+        if downgrades:
+            report.checks.append(CheckResult(
+                "envelope_downgrade",
+                passed=False,
+                detail="disabled guardrail(s): " + ", ".join(downgrades),
                 severity="warn",
             ))
 
