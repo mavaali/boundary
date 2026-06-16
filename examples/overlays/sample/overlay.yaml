@@ -1,0 +1,17 @@
+name: sample
+default_workspace: ../../workspaces/sample-repo
+enable_clawpilot: false
+
+roles:
+  researcher: ../../prompts/researcher.md
+  repo-reviewer: ../../prompts/repo-reviewer.md
+  docs-maintainer: ../../prompts/docs-maintainer.md
+  release-note-writer: ../../prompts/release-note-writer.md
+
+extra_system: |
+  ## Sample overlay
+
+  This overlay is intentionally generic. It exists to demonstrate role routing,
+  relative prompt paths, and a default workspace without requiring private local
+  files.
+

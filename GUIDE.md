@@ -1,43 +1,48 @@
-# agent-kit guide
+# Boundary guide
 
-A working manual for `~/projects/agent-kit/`. Read this when you come back to it after a week off.
+A working manual for Boundary.
 
-If you want the *why* behind the design, see `~/projects/agent-kit/DESIGN.md` and your "Hallucinated Intent and the Envelope Problem" blog post. This file is the *how*.
+If you want the *why* behind the design, see the "Hallucinated Intent and the Envelope Problem" doctrine. This file is the *how*.
 
 ---
 
 ## What this is
 
-A standalone Python harness that runs your Avengers/West Wing/Dream XI personas as real tool-calling agents. Three modes:
+Boundary runs tool-calling agents inside a pre-declared envelope. Three modes:
 
-1. **Interactive** (`agent-kit run`) — you hand it a persona + task, it runs once
-2. **Captain** (`agent-kit stark`) — loose prompt → Stark proposes an envelope → you approve → execute
-3. **Scheduled** (`agent-kit schedule install ...`) — YAML config → launchd LaunchAgent → runs headless on schedule
+1. **Interactive** (`boundary run`) — you hand it a persona + task, it runs once
+2. **Fielding Coach** (`boundary fielding-coach`) — loose prompt → Fielding Coach proposes an envelope → you approve → execute
+3. **Scheduled** (`boundary schedule install ...`) — YAML config → launchd LaunchAgent → runs headless on schedule
 
-Every run is wrapped in an **envelope** (write allowlist, spend caps, ambiguity halt) and auto-graded by **Fury** (11 property checks against the envelope, not against the agent's "quality").
+Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend caps, ambiguity halt) and can be graded by the **Third Umpire** (property checks against the envelope, not against the agent's "quality").
 
-Lives at `~/projects/agent-kit/`. Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
+Backwards-compatible local aliases remain available:
+- `boundary stark` → `boundary fielding-coach`
+- `boundary fury` → `boundary third-umpire`
+- `agent-kit ...` → `boundary ...`
+
+Lives at `~/projects/boundary/`. Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
 
 ---
 
 ## One-time setup
 
 ```bash
-cd ~/projects/agent-kit
+cd ~/projects/boundary
 source .venv/bin/activate          # already created tonight
-agent-kit copilot status           # should say "oauth token: present"
+boundary copilot status           # should say "oauth token: present"
 ```
 
 If status says missing, run:
 ```bash
-agent-kit copilot login            # device-code flow, opens https://github.com/login/device
+boundary copilot login            # device-code flow, opens https://github.com/login/device
 ```
 
 Token persists to `~/.config/github-copilot/apps.json` — shared with Copilot.vim/Copilot.lua format. Don't lose it.
 
 To see available models:
 ```bash
-agent-kit copilot models           # lists everything your subscription allows
+boundary copilot models           # lists everything your subscription allows
 ```
 
 Default model is `claude-sonnet-4.5`. Override with `--model claude-opus-4.7` etc.
@@ -46,14 +51,13 @@ Default model is `claude-sonnet-4.5`. Override with `--model claude-opus-4.7` et
 
 ## Mode 1 — Interactive run (you know what you want)
 
-Use when you have a specific persona and a clear task. Skips Stark.
+Use when you have a specific system prompt/persona and a clear task. Skips Fielding Coach.
 
 ```bash
-agent-kit run \
-  --persona ~/projects/FabricSpecs/.squad/agents/banner/charter.md \
-  --workspace ~/projects/FabricSpecs \
-  --clawpilot \
-  --envelope-writable "scratch/banner-snapshot-$(date +%F).md" \
+boundary run \
+  --system "You are a careful researcher. Read narrowly, stage a thesis, then write the allowed output." \
+  --workspace ./scratch \
+  --envelope-writable "scratch/research-snapshot-$(date +%F).md" \
   --envelope-max-writes 3 \
   --envelope-min-writes 1 \
   --max-iters 25 \
@@ -65,13 +69,16 @@ Key flags:
 
 | Flag | What it does |
 |---|---|
-| `--persona <path>` | Loads `.squad/agents/<name>/charter.md` as system prompt |
+| `--system <text>` / `--system-file <path>` | Provide a generic system prompt |
+| `--persona <path>` | Optional adapter: load a charter/prompt file as the system prompt |
 | `--workspace <dir>` | All file ops are jailed inside this dir |
 | `--clawpilot` | Adds `skill_load`, `charter_load`, `workiq` tools |
 | `--web` | Adds `fetch_url` |
 | `--envelope-writable <path>` | Activates envelope mode. Repeatable. Paths/globs relative to workspace. |
 | `--envelope-min-writes 1` | Forces the agent to actually produce output (budget pressure fires at 60% / 80% of iters if not met) |
 | `--envelope-max-writes 3` | Hard cap |
+| `--envelope-max-unstaged-reads 3` | Orientation `read_file` calls allowed before `stage_proposal` is required |
+| `--no-staging-gate` | Disable the staging pivot for a run (escape hatch; not recommended for analysis tasks) |
 | `--envelope-max-iters 25` | Loop budget |
 | `--envelope-max-dollars 0.50` | Optional spend cap; halts cleanly |
 | `--envelope-max-wall-seconds 600` | Wall-clock safety net (default 900s) |
@@ -80,45 +87,87 @@ Key flags:
 
 **No persona, just a free-form agent:**
 ```bash
-agent-kit run --task "..." --workspace ./scratch --system "You are a careful researcher."
+boundary run --task "..." --workspace ./scratch --system "You are a careful researcher."
+```
+
+**With a local overlay skin:**
+```bash
+boundary run --overlay mihir --role natasha --task "Review this repo"
 ```
 
 **Output you'll see:**
 ```
 [3] tool_call: write_file({...})
-[3] tool_result write_file: wrote 11862 chars to scratch/banner-snapshot-2026-06-12.md
+[3] tool_result write_file: wrote 11862 chars to scratch/research-snapshot-2026-06-12.md
 ...
 === final ===
 <agent's summary>
 [iterations=17 stop=stop wall=42.3s]
 [envelope: writes=1/3 attempted=1 external=0]
 [spend: in=78,243 (cached=12,500) out=4,103 est=$0.2569]
-[transcript: /Users/mihirwagle/.agent-kit/transcripts/...]
+[transcript: /Users/mihirwagle/.boundary/transcripts/...]
 ```
 
 ---
 
-## Mode 2 — Captain (loose prompt, let Stark figure it out)
+## Overlays — local skins without contaminating core
 
-Use when you don't yet know which persona or what scope. Stark reads `.squad/routing.md` + persona list, proposes structured envelope, you approve.
+Overlays keep the public harness generic while letting a local setup carry its
+own names, workspaces, role packs, and source hierarchy.
 
 ```bash
-agent-kit stark \
-  "do a quick competitive coverage check on Snowflake & Databricks, put it in scratch/" \
-  --workspace ~/projects/FabricSpecs
+boundary overlays list
+boundary overlays show sample
 ```
 
-You'll see Stark's proposal:
+An overlay can provide:
+
+| Field | Meaning |
+|---|---|
+| `default_workspace` | Workspace used when `--workspace` is omitted or `.` |
+| `enable_clawpilot` | Whether to enable local Clawpilot bridge tools |
+| `roles` | Role name → prompt/charter path mapping |
+| `extra_system` | Local guidance appended to loaded prompts |
+
+Example:
+
+```bash
+boundary run \
+  --overlay sample \
+  --role repo-reviewer \
+  --envelope-writable "scratch/security-review-$(date +%F).md" \
+  --task "Review the shell sandbox."
+```
+
+Local overlays can live under `~/.boundary/overlays/<name>/`. Keep overlays
+with private paths, source hierarchy, or role names outside the public repo.
+Public docs and examples stay generic.
+
+The repo includes `examples/overlays/sample/` as a portable overlay starter.
+
+---
+
+## Mode 2 — Fielding Coach (loose prompt, let the planner figure it out)
+
+Use when you don't yet know which persona/prompt or what scope. Fielding Coach reads optional workspace context, proposes a structured envelope, and asks for approval.
+
+```bash
+boundary fielding-coach \
+  "review this repo's auth flow and write a concise risk brief to scratch/" \
+  --workspace ~/repo
+```
+
+You'll see Fielding Coach's proposal:
 ```markdown
-# Stark proposal
+# Fielding Coach proposal
 **Restated intent:** ...
-**Persona:** banner
-**Writable paths:** ['scratch/competitive-snapshot.md']
+**Persona:** researcher
+**Writable paths:** ['scratch/auth-risk-brief.md']
 **Max writes:** 1 | **Min writes:** 1 | **Max iters:** 20
 **Rationale:** ...
 **Task (tightened):** ...
 
-[stark] dispatch this envelope? [y/N/edit]
+[fielding-coach] dispatch this envelope? [y/N/edit]
 ```
 
 - `y` — execute
@@ -127,34 +176,36 @@ You'll see Stark's proposal:
 
 To skip the approval gate (e.g., in scripts):
 ```bash
-agent-kit stark "..." --workspace ~/repo --auto
+boundary fielding-coach "..." --workspace ~/repo --auto
 ```
 
-After dispatch, you get the same envelope/spend output as `run`, plus a Fury report appended automatically.
+After dispatch, you get the same envelope/spend output as `run`, plus a Third Umpire report appended automatically.
 
-**When Stark gets routing wrong:** rerun with persona name hinted in the prompt ("…have Vision draft this…") or fall back to Mode 1.
+**When Fielding Coach gets routing wrong:** rerun with a tighter prompt or fall back to Mode 1.
 
 ---
 
 ## Mode 3 — Scheduled headless (set and forget)
 
-For things you want to run on a cadence: weekly competitive check, daily wiki maintenance, etc.
+For things you want to run on a cadence: weekly repo review, daily documentation check, etc.
 
 ### Write a schedule YAML
 
 Use `examples/schedules/weekly-coverage.yaml` as a template. Save yours anywhere:
 
 ```yaml
-name: weekly-competitive-coverage
+name: weekly-repo-review
 schedule: "weekly mon 09:00"          # see "Schedule syntax" below
-persona: banner
-workspace: ~/projects/FabricSpecs
+persona: researcher
+workspace: ~/repo
 
 envelope:
   writable_paths:
-    - scratch/weekly-coverage-{date}.md   # {date} → 2026-06-12
+    - scratch/weekly-review-{date}.md   # {date} → 2026-06-12
   max_writes: 3
   min_writes: 1
+  require_staging: true
+  max_unstaged_reads: 3
   max_iters: 25
   max_dollars: 0.50
   max_wall_seconds: 600
@@ -167,7 +218,7 @@ task: |
 ### Validate before installing
 
 ```bash
-agent-kit schedule validate path/to/your-schedule.yaml
+boundary schedule validate path/to/your-schedule.yaml
 ```
 
 Shows what would be installed: parsed schedule, rendered writable paths, caps, persona.
@@ -175,27 +226,36 @@ Shows what would be installed: parsed schedule, rendered writable paths, caps, p
 ### Test-run without scheduling
 
 ```bash
-agent-kit schedule-run path/to/your-schedule.yaml --verbose
+boundary schedule-run path/to/your-schedule.yaml --verbose
 ```
 
-Runs it now. Records the run in history. Same envelope + Fury enforcement as the real schedule.
+Runs it now. Records the run in history. Same envelope + Third Umpire enforcement as the real schedule.
 
 ### Install for real
 
 ```bash
-agent-kit schedule install path/to/your-schedule.yaml
+boundary schedule install path/to/your-schedule.yaml
 ```
 
-This writes a `~/Library/LaunchAgents/io.agent-kit.schedule.<name>.plist` and bootstraps it into launchd. Survives reboot.
+This writes a `~/Library/LaunchAgents/io.boundary.schedule.<name>.plist` and bootstraps it into launchd. Survives reboot.
 
 ### Manage installed schedules
 
 ```bash
-agent-kit schedule list                          # show what's installed
-agent-kit schedule uninstall weekly-coverage     # remove (by schedule name)
+boundary schedule list                          # show what's installed
+boundary schedule uninstall weekly-coverage     # remove (by schedule name)
 ```
 
-Logs go to `~/.agent-kit/launchd-logs/io.agent-kit.schedule.<name>.{out,err}.log`.
+Logs go to `~/.boundary/launchd-logs/io.boundary.schedule.<name>.{out,err}.log`.
+
+More schedule starters live in `examples/schedules/`:
+
+| File | Use it for |
+|---|---|
+| `weekly-coverage.yaml` | broad weekly repo review |
+| `daily-docs-check.yaml` | short daily documentation drift scan |
+| `weekly-risk-review.yaml` | risk-focused code and process review |
+| `release-notes-draft.yaml` | convert recent changes into a draft release note |
 
 ### Schedule syntax
 
@@ -229,7 +289,7 @@ Use `queue` for anything you care about. Use `best_effort` for fully automated c
 
 ### Run-lock
 
-The headless runner takes a PID-based lock per schedule name. If a Monday Banner run is still going when next Monday hits, the new trigger logs `[skip] previous run still active` instead of clobbering. Stale locks (process dead) get stolen automatically.
+The headless runner takes a PID-based lock per schedule name. If a prior run is still active when the next trigger fires, the new trigger logs `[skip] previous run still active` instead of clobbering. Stale locks (process dead) get stolen automatically.
 
 ---
 
@@ -237,7 +297,7 @@ The headless runner takes a PID-based lock per schedule name. If a Monday Banner
 
 ### Transcripts
 
-Every run writes a JSONL transcript to `~/.agent-kit/transcripts/<ts>-<persona>-<pid>.jsonl`.
+Every run writes a JSONL transcript to `~/.boundary/transcripts/<ts>-<persona>-<pid>.jsonl`.
 
 Each line is one event: `request`, `assistant`, `tool_result`, `envelope_start`, `budget_pressure`, `envelope_end`, etc.
 
@@ -245,7 +305,7 @@ Useful one-liners:
 
 ```bash
 # pretty-print last transcript
-ls -t ~/.agent-kit/transcripts/*.jsonl | head -1 | xargs -I{} jq . {} | less
+ls -t ~/.boundary/transcripts/*.jsonl | head -1 | xargs -I{} jq . {} | less
 
 # extract just the assistant turns
 jq -r 'select(.type=="assistant") | "[" + (.iteration|tostring) + "] " + (.content // "")' <transcript>
@@ -257,40 +317,46 @@ jq -r 'select(.type=="charter_version")' <transcript>
 jq -r 'select(.type=="envelope_end") | {tokens_in: .input_tokens, tokens_out: .output_tokens, est_dollars: .estimated_dollars}' <transcript>
 ```
 
-### Fury reports
+### Third Umpire reports
 
 Grade any transcript at any time:
 
 ```bash
-agent-kit fury ~/.agent-kit/transcripts/<file>.jsonl
+boundary third-umpire ~/.boundary/transcripts/<file>.jsonl
 ```
 
+`boundary fury ...` remains as a local/backwards-compatible alias.
+
 Verdict is `PASS` / `WARN` / `FAIL`. 11 checks, severity-graded. `FAIL` exit code is 2.
+
+For envelope runs with staging enabled, Third Umpire also reports
+`staging_pivot`: whether `stage_proposal` happened before the first write and
+whether the run hit any staging refusals. This is the anti-boil-the-ocean check.
 
 ### Run history
 
 ```bash
-agent-kit history                          # last 20 runs
-agent-kit history --limit 50
-agent-kit history --schedule weekly-competitive-coverage
+boundary history                          # last 20 runs
+boundary history --limit 50
+boundary history --schedule weekly-competitive-coverage
 ```
 
-Output columns: id, timestamp, schedule name, persona, stop reason, Fury verdict, writes, $, wall.
+Output columns: id, timestamp, schedule name, persona, stop reason, Third Umpire verdict, writes, $, wall.
 
 ### Review queue
 
 ```bash
-agent-kit review-queue                                  # list open ambiguity halts
-agent-kit review-queue resolve 7 "yes, target Q3 instead"   # mark resolved with note
+boundary review-queue                                  # list open ambiguity halts
+boundary review-queue resolve 7 "yes, target Q3 instead"   # mark resolved with note
 ```
 
 When an agent calls `ask_human` and you weren't there, the question + options + transcript path land here. Process them on your own time. Resolving doesn't rerun the schedule — you decide whether to manually `schedule-run` again.
 
 ---
 
-## Editing personas
+## Editing personas / prompt files
 
-You're not editing this repo — you're editing `~/projects/FabricSpecs/.squad/agents/<name>/charter.md`. Same files you've always had.
+Generic runs can use `--system` or `--system-file`. If your workspace has a role pack under `.squad/agents/<name>/charter.md`, `--persona` can load those prompt files directly.
 
 Things to know:
 
@@ -299,10 +365,141 @@ Things to know:
 - **The harness appends an envelope note** to the charter at runtime. You don't need to write envelope-aware instructions into the charter itself.
 - **Personas have `ask_human` available** in envelope mode. Charters should encourage using it when blocked rather than guessing.
 
-To add a new persona:
+To add a new role-pack persona:
 1. Drop `charter.md` in `.squad/agents/<name>/`
 2. Reference it: `--persona ~/.../.squad/agents/<name>/charter.md`
-3. Stark picks it up automatically next time he reads the personas list
+3. Fielding Coach picks it up automatically next time the personas list is read
+
+---
+
+## Staging pivot — anti-boil-the-ocean analysis
+
+Envelope mode now adds one analysis primitive: `stage_proposal`.
+
+This is not a second budget. Reads still do **not** debit the write budget. The rule is simpler: after a small orientation window, the agent must stage a provisional answer before doing more deep reads or any write.
+
+### Why
+
+The failure mode this prevents is:
+
+```
+read everything → synthesize late → write at the end
+```
+
+The desired loop is:
+
+```
+candidate answer → smallest discriminating read → revise or commit
+```
+
+The staging pivot asks the same opportunity-value question at the read/write boundary:
+
+> Is the marginal value of this next action greater than the value of acting now?
+
+For reads, the action is "one more file." For writes, the action is "spend irreversibility budget on this output." The staging area is the pivot between those two questions.
+
+### Runtime behavior
+
+When an envelope has writable paths:
+
+1. The agent may make up to `max_unstaged_reads` orientation `read_file` calls.
+2. More `read_file` calls are refused until the agent calls `stage_proposal`.
+3. Writes and commit tools are refused until the agent calls `stage_proposal`.
+4. After staging, further reads are allowed, but must test, kill, or strengthen the staged answer.
+5. If a write is refused, the agent must revise from the same staged proposal and reads — no restarting the read phase.
+
+`stage_proposal` requires:
+
+| Field | Meaning |
+|---|---|
+| `thesis` | Answer-first tentative conclusion |
+| `hypotheses` | 2-3 lines that could explain or falsify the answer |
+| `evidence_plan` | Smallest reads needed to discriminate between hypotheses |
+| `intended_write` | Output path/action if known |
+| `cost_class` | Rough action class, e.g. review, patch, email, commit |
+| `kill_criteria` | What would stop this line of inquiry |
+
+The point is Minto + Book of Why discipline: hypothesis-driven analysis, not source collection.
+
+---
+
+## Commit tools — irreversible external actions
+
+A **commit tool** is anything that changes state outside the workspace and can't be unwound: send email, post Teams message, push commit, file ADO bug, submit expense, charge a card. They're treated as a distinct tool kind (`kind="commit"`) and gated separately from `read`/`write`/`external`.
+
+The envelope's bet: bound the *output* of cognitive work via writable_paths + max_writes; bound the *commitments* via the commit policy. The two layers are independent.
+
+### Policies
+
+| Policy | Behavior |
+|---|---|
+| `refuse` | Any commit attempt is refused. **Default for headless runs.** Safe choice. |
+| `queue` | Halts the run and queues a review entry (mirrors `ambiguity_halt`). Resume via `boundary review-queue`. |
+| `ask` | Interactive only: refuses and instructs the agent to call `ask_human`. Then the human decides. |
+| `allow` | Executes commit tools. Requires `commit_allowlist` enumerating which tools — empty list under `allow` means ALL commit tools (foot-gun, validated against). |
+
+### Mode-by-mode
+
+**`boundary run --envelope-writable ...`** (interactive)
+If commit tools are registered and `--on-commit` is not passed, you'll be prompted: `r/q/a` (default `r`). `allow` requires explicit flags:
+
+```bash
+boundary run ... --on-commit allow --commit-allow bash_commit
+```
+
+**`boundary fielding-coach "prompt"`** (interactive planner)
+Same prompt — Fielding Coach dispatch enables shell by default, so `bash_commit` is in the registry. `boundary stark ...` remains a local/backwards-compatible alias.
+
+**`boundary schedule install <yaml>`** (headless)
+YAML must declare `on_commit` if it's anything other than the default `refuse`. Install fails on bad combinations:
+
+```yaml
+name: weekly-digest
+schedule: weekly mon 09:00
+persona: researcher
+workspace: ~/repo
+task: "..."
+envelope:
+  writable_paths: ["scratch/digest-{date}.md"]
+on_commit: allow
+commit_allowlist:
+  - bash_commit   # for `gh issue update`, etc.
+```
+
+Validation errors block install:
+- `on_commit: allow` with empty `commit_allowlist` (probably a mistake)
+- `commit_allowlist` set but `on_commit != allow` (would be ignored)
+- `on_commit` not in {refuse, queue, allow}
+
+### The bash loophole and the kill-list
+
+Bash is now locally sandboxed on macOS with `sandbox-exec`: regular `bash` and `bash_commit` run with file writes denied everywhere except the workspace root. The runner also sets `HOME`, `TMPDIR`, and XDG cache/config/data dirs inside the workspace so common tools do not spill caches into your real home directory. Reads and network access are still allowed; the sandbox is a local filesystem write boundary, not a full network sandbox.
+
+Bash can still sidestep typed commit tools for external side effects: `curl -X POST`, `gh issue create`, `osascript -e 'tell application Mail...'`. We close the obvious paths with a basename denylist on the regular `bash` tool:
+
+```
+curl, wget, gh, az, mail, sendmail, osascript, git (push|commit|tag only)
+```
+
+When `bash` is called with one of these as the first token (basename, after optional env-var prefix), it's refused with: "use `bash_commit` instead." `bash_commit` is a separate tool tagged `kind="commit"`, so it routes through the commit policy above.
+
+**Slope guardrails — read before adding to the denylist:**
+- **Hard cap of 12 entries.** Frozen at 8 today. At 13, stop and reconsider the model, don't extend.
+- **No regex. No argument inspection** except the single `git` subcommand exception.
+- **If you want argv inspection on a second binary, build a typed `kind="commit"` tool instead.** That's why `bash_commit` exists. Don't make this file into a policy DSL.
+- **Third Umpire surfaces every `bash_commit` and commit-tool call in its verdict.** If an agent shells out to `gh` repeatedly, the answer is `gh_create_issue` as a typed commit tool, not a longer denylist.
+- The denylist is honest about what it doesn't catch: `python -c "import urllib..."`, `nc`, `ssh host 'curl ...'`. A determined-confused agent can route around it for network side effects. The point is to make *common* commit paths require explicit intent (`bash_commit`), while the OS sandbox independently prevents local file writes outside the workspace.
+
+### Third Umpire output
+
+Third Umpire reports commit activity in the summary block:
+- `commit_attempted` / `commit_executed` counts
+- `on_commit` policy in effect
+- `commit_allowlist`
+
+And adds two checks:
+- **commit_policy_held** — FAIL if a commit executed under `refuse`/`queue`/`ask`, or under `allow` but not in the allowlist.
+- **bash_egress_denylist** — WARN (informational) for every blocked bash command, with a reminder to build a typed tool instead of extending the denylist.
 
 ---
 
@@ -323,19 +520,49 @@ To add a new persona:
 
 ### What things actually cost (Sonnet 4.5)
 
-A real Banner run from tonight: ~80K input + 4K output ≈ **$0.30**.
+A real research run: ~80K input + 4K output ≈ **$0.30**.
 Same task on Opus 4.7: ~$1.50.
 Same task on Haiku 4.5: ~$0.08.
 
-Cached input is ~10× cheaper. On repeated similar tasks (e.g., daily Banner check on the same wiki), expect 50-80% cache hit rate after the first run.
+Cached input is ~10× cheaper. On repeated similar tasks over the same workspace, expect 50-80% cache hit rate after the first run.
 
 ### Setting a hard $ ceiling
 
 ```bash
-agent-kit run ... --envelope-max-dollars 0.25
+boundary run ... --envelope-max-dollars 0.25
 ```
 
-Fury reports `budget_halt` as WARN if the run was cut off, plus exact spend.
+Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact spend.
+
+---
+
+## Security boundary
+
+Boundary has two practical safety layers:
+
+1. The workspace boundary controls where file tools operate.
+2. The envelope controls which paths the agent may write, append, or commit.
+
+On macOS, shell commands run through `sandbox-exec` with local writes restricted
+to the workspace and its internal temp directory. This is a write boundary, not a
+complete security sandbox:
+
+- shell commands may still read files the current OS user can read;
+- network egress is not fully blocked;
+- tools enabled through local adapters may expose additional capabilities;
+- commit-class tools are governed by the commit policy, but read-only tools can
+  still surface sensitive data into the transcript.
+
+For sensitive work, run Boundary as a dedicated OS user or inside a container,
+disable shell with `--no-shell`, leave web disabled unless needed, and keep
+private overlays under `~/.boundary/overlays/` rather than in the repo.
+
+Copilot OAuth tokens are stored in `~/.config/github-copilot/apps.json`. Agent
+Kit refuses to load that file if group or world permissions are set; fix with:
+
+```bash
+chmod 600 ~/.config/github-copilot/apps.json
+```
 
 ---
 
@@ -351,15 +578,15 @@ Likely a stalled provider call. Wall-clock cap kicks in. Check transcript for th
 
 ### "skipped_locked" in history
 
-Previous run with same schedule name still in progress. Wait for it, or remove `~/.agent-kit/locks/<name>.lock` manually if you're sure it's stale (the PID-alive check should handle this — if you're hitting it, file a bug).
+Previous run with same schedule name still in progress. Wait for it, or remove `~/.boundary/locks/<name>.lock` manually if you're sure it's stale (the PID-alive check should handle this — if you're hitting it, file a bug).
 
-### Stark routes to the wrong persona
+### Fielding Coach routes to the wrong persona
 
 Two fixes:
-1. Mention the persona in your prompt: "have Banner do …"
-2. Update `.squad/routing.md` so future Stark calls see better routing rules
+1. Mention the persona/prompt in your request.
+2. Update optional workspace routing docs so future Fielding Coach calls see better routing rules.
 
-### Fury says `FAIL: produced_output`
+### Third Umpire says `FAIL: produced_output`
 
 Agent didn't write. Either bumped into ambiguity (check transcript for `ask_human`), the task was too narrow to need output, or `max_iters` was too small for the read-budget the task needed. Raise `min_writes` and the budget-pressure system will nudge harder.
 
@@ -369,7 +596,15 @@ Old transcript pre-instrumentation, or the provider didn't return `usage`. Toget
 
 ### "device-code login failed: expired_token"
 
-The 15-min code window passed. Rerun `agent-kit copilot login` and approve faster.
+The 15-min code window passed. Rerun `boundary copilot login` and approve faster.
+
+### "Copilot OAuth token file is too permissive"
+
+Boundary refuses to read token files that are group- or world-readable. Run:
+
+```bash
+chmod 600 ~/.config/github-copilot/apps.json
+```
 
 ---
 
@@ -377,24 +612,24 @@ The 15-min code window passed. Rerun `agent-kit copilot login` and approve faste
 
 | What | Where |
 |---|---|
-| Source | `~/projects/agent-kit/` |
-| Venv | `~/projects/agent-kit/.venv/` |
+| Source | `~/projects/boundary/` |
+| Venv | `~/projects/boundary/.venv/` |
 | Copilot token | `~/.config/github-copilot/apps.json` |
-| Transcripts | `~/.agent-kit/transcripts/*.jsonl` |
-| Run history DB | `~/.agent-kit/history.db` |
-| Per-schedule locks | `~/.agent-kit/locks/<name>.lock` |
-| launchd plists | `~/Library/LaunchAgents/io.agent-kit.schedule.*.plist` |
-| launchd logs | `~/.agent-kit/launchd-logs/*.log` |
-| Example schedules | `~/projects/agent-kit/examples/schedules/` |
+| Transcripts | `~/.boundary/transcripts/*.jsonl` |
+| Run history DB | `~/.boundary/history.db` |
+| Per-schedule locks | `~/.boundary/locks/<name>.lock` |
+| launchd plists | `~/Library/LaunchAgents/io.boundary.schedule.*.plist` |
+| launchd logs | `~/.boundary/launchd-logs/*.log` |
+| Example schedules | `~/projects/boundary/examples/schedules/` |
 
 ---
 
 ## When to use which mode
 
-- **You're poking at something exploratory** → Mode 2 (`stark`). Lets you stay loose, Stark forces precision.
-- **You know exactly what you want, one-off** → Mode 1 (`run`). Skip Stark.
+- **You're poking at something exploratory** → Mode 2 (`fielding-coach`). Lets you stay loose; Fielding Coach forces precision.
+- **You know exactly what you want, one-off** → Mode 1 (`run`). Skip Fielding Coach.
 - **Recurring task you'd otherwise forget** → Mode 3 (`schedule install`).
-- **Reviewing whether things are working at all** → `agent-kit history` once a week.
+- **Reviewing whether things are working at all** → `boundary history` once a week.
 
 ---
 
@@ -402,10 +637,10 @@ The 15-min code window passed. Rerun `agent-kit copilot login` and approve faste
 
 If you find yourself wanting these, here's the queue:
 
-1. **`charter_scope_match`** Fury check — validate Stark routed within persona's "What I Own"
+1. **`charter_scope_match`** Third Umpire check — validate Fielding Coach routed within persona's "What I Own"
 2. **Daily digest** via `workiq_send_email` / Teams DM (instead of just CLI `history`)
 3. **Provenance tags** on written files for cross-run staleness detection
 4. **`schedule install` conflict warning** when writable paths overlap with existing schedule
-5. **Multi-agent chains** (Banner → Vision → Pepper as one envelope)
+5. **Multi-agent chains** (role A → role B → role C as one envelope)
 
 None of these are urgent. Add when you actually hit the failure they solve.

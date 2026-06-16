@@ -1,0 +1,32 @@
+name: daily-docs-check
+schedule: "daily 09:00"
+persona: docs-maintainer
+workspace: examples/workspaces/sample-repo
+
+envelope:
+  writable_paths:
+    - scratch/docs-check-{date}.md
+  max_writes: 1
+  min_writes: 1
+  require_staging: true
+  max_unstaged_reads: 2
+  max_iters: 18
+  max_dollars: 0.25
+  max_wall_seconds: 600
+
+on_ambiguity: queue
+on_failure: digest
+on_commit: refuse
+notify: digest_daily
+
+task: |
+  Daily documentation drift check.
+
+  Read README.md and docs/product-notes.md. Stage a thesis about the most likely
+  documentation drift or gap, then write a short note with:
+  - the issue, if any
+  - the exact files supporting it
+  - the smallest recommended edit
+
+  Label claims [DATA], [HYPOTHESIS], or [TRAINING].
+

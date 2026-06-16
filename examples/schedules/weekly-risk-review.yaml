@@ -1,0 +1,36 @@
+name: weekly-risk-review
+schedule: "weekly fri 15:00"
+persona: repo-reviewer
+workspace: examples/workspaces/sample-repo
+
+envelope:
+  writable_paths:
+    - scratch/risk-review-{date}.md
+  max_writes: 1
+  min_writes: 1
+  require_staging: true
+  max_unstaged_reads: 3
+  max_iters: 25
+  max_dollars: 0.50
+  max_wall_seconds: 900
+
+on_ambiguity: queue
+on_failure: digest
+on_commit: refuse
+notify: digest_daily
+
+task: |
+  Weekly risk review.
+
+  Inspect the repository for correctness, safety, and maintainability risks.
+  Start with README.md, docs/product-notes.md, and source files. Use grep only
+  after staging a thesis.
+
+  Write:
+  - up to 3 risks, highest severity first
+  - evidence for each risk
+  - one concrete mitigation per risk
+  - "No material issue found" if the evidence does not support a real finding
+
+  Label claims [DATA], [HYPOTHESIS], or [TRAINING].
+

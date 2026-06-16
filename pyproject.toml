@@ -1,8 +1,23 @@
 [project]
-name = "agent-kit"
+name = "boundary"
 version = "0.1.0"
-description = "Minimal tool-calling agent harness with pluggable model backends"
+description = "Tool-calling agent harness with envelopes, staging gates, schedules, and post-run evaluation"
 requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Mihir Wagle"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.0",
@@ -10,11 +25,61 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-kit = "agent_kit.cli:main"
+boundary = "boundary.cli:main"
+"agent-kit" = "boundary.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent_kit*"]
+include = ["boundary*"]
+
+[tool.setuptools.data-files]
+"share/boundary/examples" = [
+    "examples/README.md",
+    "examples/hello_world.py",
+]
+"share/boundary/examples/prompts" = [
+    "examples/prompts/docs-maintainer.md",
+    "examples/prompts/release-note-writer.md",
+    "examples/prompts/repo-reviewer.md",
+    "examples/prompts/researcher.md",
+]
+"share/boundary/examples/overlays/sample" = [
+    "examples/overlays/sample/README.md",
+    "examples/overlays/sample/overlay.yaml",
+]
+"share/boundary/examples/schedules" = [
+    "examples/schedules/daily-docs-check.yaml",
+    "examples/schedules/release-notes-draft.yaml",
+    "examples/schedules/weekly-coverage.yaml",
+    "examples/schedules/weekly-risk-review.yaml",
+]
+"share/boundary/examples/workspaces/sample-repo" = [
+    "examples/workspaces/sample-repo/README.md",
+]
+"share/boundary/examples/workspaces/sample-repo/.squad/agents/docs-maintainer" = [
+    "examples/workspaces/sample-repo/.squad/agents/docs-maintainer/charter.md",
+]
+"share/boundary/examples/workspaces/sample-repo/.squad/agents/release-note-writer" = [
+    "examples/workspaces/sample-repo/.squad/agents/release-note-writer/charter.md",
+]
+"share/boundary/examples/workspaces/sample-repo/.squad/agents/repo-reviewer" = [
+    "examples/workspaces/sample-repo/.squad/agents/repo-reviewer/charter.md",
+]
+"share/boundary/examples/workspaces/sample-repo/.squad/agents/researcher" = [
+    "examples/workspaces/sample-repo/.squad/agents/researcher/charter.md",
+]
+"share/boundary/examples/workspaces/sample-repo/docs" = [
+    "examples/workspaces/sample-repo/docs/product-notes.md",
+]
+"share/boundary/examples/workspaces/sample-repo/src" = [
+    "examples/workspaces/sample-repo/src/access.py",
+]
+"share/boundary/examples/workspaces/sample-repo/tests" = [
+    "examples/workspaces/sample-repo/tests/access_checks.py",
+]
+"share/boundary/examples/workspaces/sample-repo/scratch" = [
+    "examples/workspaces/sample-repo/scratch/.gitkeep",
+]

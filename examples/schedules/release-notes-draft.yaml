@@ -1,0 +1,31 @@
+name: release-notes-draft
+schedule: "weekly mon 10:00"
+persona: release-note-writer
+workspace: examples/workspaces/sample-repo
+
+envelope:
+  writable_paths:
+    - scratch/release-notes-{date}.md
+  max_writes: 1
+  min_writes: 1
+  require_staging: true
+  max_unstaged_reads: 3
+  max_iters: 25
+  max_dollars: 0.50
+  max_wall_seconds: 900
+
+on_ambiguity: queue
+on_failure: digest
+on_commit: refuse
+notify: digest_daily
+
+task: |
+  Draft release notes from repository evidence.
+
+  Read README.md, docs/product-notes.md, and relevant source files. If git
+  history is available, use read-only git commands only. Do not commit, push, or
+  call external services.
+
+  Write a concise release-note draft with Summary, Added, Changed, Fixed, and
+  Validation sections. Label claims [DATA], [HYPOTHESIS], or [TRAINING].
+
