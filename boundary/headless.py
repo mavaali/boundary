@@ -1,6 +1,7 @@
 """Headless runner — executes a ScheduleConfig with no human in the loop."""
 from __future__ import annotations
 import hashlib
+import json
 import os
 import time
 import traceback
@@ -13,6 +14,7 @@ from boundary.history import History
 from boundary.schedule import ScheduleConfig
 
 LOCK_DIR = Path("~/.boundary/locks").expanduser()
+EVENT_PENDING_DIR = Path("~/.boundary/events/pending").expanduser()
 
 
 def _acquire_lock(name: str) -> Path | None:
@@ -105,6 +107,82 @@ def _last_commit_attempt_from_transcript(transcript_path: Path) -> tuple[str, li
         f"Args: {arg_preview}"
     )
     return q, ["approve", "deny", "rescope"]
+
+
+def _scout_hook_config(config: ScheduleConfig) -> dict | None:
+    notify = config.notify
+    if not isinstance(notify, dict):
+        return None
+    hook = notify.get("scout_hook")
+    return hook if isinstance(hook, dict) else None
+
+
+def _should_emit_scout_hook(hook: dict, *, verdict: str | None, error: str | None) -> bool:
+    mode = str(hook.get("on", "warn_fail")).lower()
+    if mode == "always":
+        return True
+    if mode == "failure":
+        return bool(error) or verdict in {"FAIL", "ERROR"}
+    if mode == "warn_fail":
+        return bool(error) or verdict in {"WARN", "FAIL", "ERROR"}
+    return False
+
+
+def _emit_scout_hook_event(
+    config: ScheduleConfig,
+    *,
+    run_id: int,
+    review_id: int | None,
+    stop_reason: str,
+    third_umpire_verdict: str | None,
+    transcript_path: str | None,
+    written_files: list,
+    error_text: str | None,
+    rendered_paths: list[str],
+    wall_seconds: float,
+    estimated_dollars: float,
+) -> str | None:
+    hook = _scout_hook_config(config)
+    if not hook or not _should_emit_scout_hook(
+        hook, verdict=third_umpire_verdict, error=error_text,
+    ):
+        return None
+
+    workspace = Path(config.workspace).expanduser()
+    summary_template = hook.get("summary_file")
+    summary_file = None
+    if isinstance(summary_template, str) and summary_template:
+        summary_file = str(workspace / config.render_template(summary_template))
+    elif rendered_paths:
+        summary_file = str(workspace / rendered_paths[0])
+
+    event = {
+        "type": "boundary.schedule.completed",
+        "version": 1,
+        "schedule": config.name,
+        "persona": config.persona,
+        "workspace": str(workspace),
+        "run_id": run_id,
+        "review_id": review_id,
+        "stop_reason": stop_reason,
+        "third_umpire_verdict": third_umpire_verdict,
+        "transcript": transcript_path,
+        "summary_file": summary_file,
+        "written_files": written_files,
+        "error": error_text,
+        "wall_seconds": wall_seconds,
+        "estimated_dollars": estimated_dollars,
+        "channel": hook.get("channel", "teams_dm"),
+        "created_at": int(time.time()),
+    }
+
+    safe = config.name.replace("/", "_").replace(" ", "_")
+    EVENT_PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    path = EVENT_PENDING_DIR / f"{safe}-{run_id}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(event, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return str(path)
 
 
 def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
@@ -249,11 +327,25 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         )
 
     history.close()
+    event_path = _emit_scout_hook_event(
+        config,
+        run_id=run_id,
+        review_id=review_id,
+        stop_reason=stop_reason,
+        third_umpire_verdict=third_umpire_verdict,
+        transcript_path=transcript_path,
+        written_files=written_files,
+        error_text=error_text,
+        rendered_paths=config.rendered_writable_paths(),
+        wall_seconds=wall_seconds,
+        estimated_dollars=estimated_dollars,
+    )
     _release_lock(lock_path)
     return {
         "run_id": run_id, "review_id": review_id, "stop_reason": stop_reason,
         "third_umpire_verdict": third_umpire_verdict, "transcript": transcript_path,
         "writes": writes_executed, "tokens_in": input_tokens, "tokens_out": output_tokens,
         "dollars": estimated_dollars, "wall_seconds": wall_seconds,
+        "event_path": event_path,
         "written_files": written_files, "error": error_text,
     }

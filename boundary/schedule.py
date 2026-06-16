@@ -42,7 +42,7 @@ class ScheduleConfig:
     commit_allowlist: list[str] = field(default_factory=list)
     client: str = "copilot"
     model: str | None = None
-    notify: str = "digest_daily"        # informational
+    notify: Any = "digest_daily"        # informational, or a notify config block
     enabled: bool = True
 
     @classmethod

@@ -286,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
               f"writes={out['writes']} ${out['dollars']:.4f} {out['wall_seconds']:.1f}s")
         if out.get("review_id"):
             print(f"[review] queued as review_id={out['review_id']} — see `boundary review-queue list`")
+        if out.get("event_path"):
+            print(f"[event] {out['event_path']}")
         if out.get("error"):
             print(f"[error] {out['error'][:500]}")
             return 2
