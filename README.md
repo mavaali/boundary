@@ -57,13 +57,18 @@ because differentiation by silence reads as ignorance of the field.
 The [lethal trifecta](https://simonwillison.net/2025/Jun/16/lethal-trifecta/) —
 private-data access **+** exposure to untrusted content **+** external
 communication — is what turns a prompt injection into an exfiltration. Boundary
-addresses two-thirds of it:
+now touches all three legs:
 
 | Trifecta leg | Boundary today |
 |---|---|
-| Private-data access | **Not defended** — reads are free and unbounded; the envelope bounds writes, not reads |
-| Untrusted content drives action | **Partially** — the staging pivot forces a committed thesis before deep reads/writes |
-| External communication | **Boundable** — commit-tool gating + write allowlist bound irreversible/outbound actions; with `--sandbox-driver srt` an OS-enforced egress allowlist bounds network exfiltration across the whole process tree (default `seatbelt` driver does not) |
+| Private-data access | **Partially** — reads are unbounded, but once a run reads untrusted external content, the taint gate (`--on-taint`) treats any subsequent write as a potential exfil channel |
+| Untrusted content drives action | **Bounded** — the staging pivot forces a committed thesis before deep reads/writes, and the taint gate refuses/warns when untrusted content flows into a writable sink (the write-as-exfil channel) |
+| External communication | **Bounded** — commit-tool gating + write allowlist bound irreversible/outbound actions; with `--sandbox-driver srt` an OS-enforced egress allowlist bounds network exfiltration across the whole process tree (default `seatbelt` driver does not) |
+
+The taint dimension is coarse (run-level): once *any* untrusted source is read,
+writes are flagged — it does not track which bytes flowed where. Default is
+`warn` (a verdict line, not a block); `refuse` blocks all writes post-taint.
+Per-value / per-sink granularity is future work.
 
 The honest gap: an allowlisted write is itself an exfiltration channel if its
 content is tainted. Closing it is information-flow tracking — on the roadmap, not

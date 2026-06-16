@@ -40,6 +40,7 @@ class ScheduleConfig:
     # mean it).
     on_commit: CommitPolicy = "refuse"
     commit_allowlist: list[str] = field(default_factory=list)
+    on_taint: str = "warn"
     client: str = "copilot"
     model: str | None = None
     notify: str = "digest_daily"        # informational
@@ -68,6 +69,7 @@ class ScheduleConfig:
             on_ambiguity=data.get("on_ambiguity", "queue"),
             on_failure=data.get("on_failure", "digest"),
             on_commit=data.get("on_commit", "refuse"),
+            on_taint=data.get("on_taint", "warn"),
             commit_allowlist=list(data.get("commit_allowlist", []) or []),
             client=data.get("client", "copilot"),
             model=data.get("model"),

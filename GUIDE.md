@@ -499,6 +499,37 @@ And adds two checks:
 
 ---
 
+## Taint / provenance — the write-as-exfil channel
+
+The envelope bounds *which* path, *how many* writes, and *which* commits. It does
+not, by default, bound *what content* flows into an allowed write. An agent can
+read an untrusted file or web page carrying an injection and write exfiltrated
+content into a perfectly-allowlisted path that later syncs or shares — the
+writable path becomes an exfiltration channel. That is the lethal trifecta's
+third leg.
+
+The **taint gate** (`--on-taint`, or `on_taint:` in a schedule YAML) closes it
+with coarse, run-level tracking:
+
+- Reading untrusted external content (`fetch_url`) marks the run **tainted**.
+- After that, any write/commit to a writable sink trips a `taint_flow` event.
+- `--on-taint` decides what happens:
+  - `warn` (default) — record the `taint_flow` event, let the write proceed.
+  - `refuse` — block the write; untrusted content must not reach a writable sink.
+  - `allow` — disable the check (a **downgrade**; the Third Umpire flags it).
+
+A run that reads only workspace files and writes does **not** trip the gate — no
+false positive on the common case. The Third Umpire surfaces a `taint_flow` check
+in its verdict, and `stage_proposal` records the taint set that fed the thesis.
+
+> **Coarse by design.** Once *any* untrusted source is read, all later writes are
+> flagged — it does not track which bytes flowed where. `warn` is the safe
+> default (a verdict line, not a block). `refuse` is aggressive: it blocks *every*
+> write post-taint, so reserve it for runs where no untrusted→write flow is ever
+> legitimate. Per-value / per-sink granularity is future work.
+
+---
+
 ## Cost / budget knobs
 
 ### Defaults per run

@@ -6,6 +6,18 @@ All notable changes to Boundary are documented here. Format follows
 changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 (information-flow / taint) with a frozen API.
 
+## [Unreleased]
+
+### Added
+- **Taint / provenance dimension (`--on-taint {refuse,warn,allow}`)** — closes the
+  write-as-exfil channel (the lethal trifecta's third leg). Reading untrusted
+  external content (`fetch_url`) marks the run tainted; a subsequent write to a
+  writable sink trips a `taint_flow` event. `warn` (default) records it, `refuse`
+  blocks the write, `allow` disables the check (surfaced as a downgrade). Coarse,
+  run-level; workspace-only runs never trip it. Third Umpire emits a `taint_flow`
+  verdict line; `stage_proposal` records the taint set; `on_taint:` works in
+  schedule YAML. The selftest `taint_flow_enforced` guarantee is now enforced.
+
 ## [0.2.0] - 2026-06-16
 
 The security-floor milestone: an assertion harness for the envelope's

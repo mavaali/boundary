@@ -262,16 +262,47 @@ def check_denylist_bypass_blocked() -> SelftestResult:
 
 
 def check_taint_flow() -> SelftestResult:
-    """GATED (Item 3): tainted (external) content flowing into a writable sink
-    must trigger a taint_flow policy. No taint/provenance tracking exists yet."""
-    has_taint = hasattr(Envelope(), "on_taint")
+    """Untrusted external content flowing into a writable sink must trip the
+    taint gate; a workspace-only run must not (Item 3)."""
+    name = "taint_flow_enforced"
+
+    def _fetch_tool() -> Tool:
+        return Tool(
+            "fetch_url", "external fetch",
+            {"type": "object", "properties": {"url": {"type": "string"}, "reason": {"type": "string"}},
+             "required": ["url", "reason"]},
+            lambda url="", reason="": f"<untrusted {url}>", kind="external",
+        )
+
+    def _run(on_taint: str, do_fetch: bool):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            env = Envelope(writable_paths=["out.md"], on_taint=on_taint)
+            env.require_staging = False
+            ws = Workspace(root=root)
+            base = ToolRegistry()
+            register_fs_tools(base, ws)
+            base.register(_fetch_tool())
+            counters: dict[str, int] = {}
+            events: list[EnvelopeEvent] = []
+            enforced = ToolRegistry()
+            for tool in base._tools.values():
+                enforced.register(_make_enforced_tool(tool, env, counters, events, [1]))
+            if do_fetch:
+                enforced.get("fetch_url").call({"url": "http://evil.test", "reason": "r"})
+            wr = enforced.get("write_file").call({"path": "out.md", "content": "x", "reason": "r"})
+            return wr, [e for e in events if e.kind == "taint_flow"]
+
+    refuse_wr, refuse_ev = _run("refuse", do_fetch=True)
+    clean_wr, clean_ev = _run("warn", do_fetch=False)
+    blocked = "ENVELOPE REFUSED" in refuse_wr and bool(refuse_ev)
+    no_false_positive = clean_wr.startswith("wrote ") and not clean_ev
+    passed = blocked and no_false_positive
     return SelftestResult(
-        "taint_flow_enforced",
-        passed=has_taint,
-        detail="taint/provenance tracking present"
-        if has_taint
-        else "no taint/provenance dimension yet — needs Item 3",
-        expected_fail=True,
+        name, passed=passed,
+        detail="tainted fetch→write tripped the taint gate; workspace-only write did not"
+        if passed
+        else f"taint gate wrong: blocked={blocked} no_false_positive={no_false_positive}",
     )
 
 
