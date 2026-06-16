@@ -19,7 +19,6 @@ Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend c
 Backwards-compatible local aliases remain available:
 - `boundary stark` → `boundary fielding-coach`
 - `boundary fury` → `boundary third-umpire`
-- `agent-kit ...` → `boundary ...`
 
 Lives at `~/projects/boundary/`. Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
 

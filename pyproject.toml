@@ -26,7 +26,6 @@ dependencies = [
 
 [project.scripts]
 boundary = "boundary.cli:main"
-"agent-kit" = "boundary.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
