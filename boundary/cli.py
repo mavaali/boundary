@@ -121,6 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-iters", type=int, default=25)
     run.add_argument("--no-shell", action="store_true")
     run.add_argument("--no-fs", action="store_true")
+    run.add_argument("--sandbox-driver", choices=["seatbelt", "srt", "none"], default="seatbelt",
+                     help="OS sandbox for the bash tool: seatbelt (macOS write-jail, default), "
+                          "srt (cross-platform + egress allowlist; needs `npm i -g @anthropic-ai/sandbox-runtime`), "
+                          "or none (no sandbox)")
+    run.add_argument("--egress-allow", action="append", default=[],
+                     help="under --sandbox-driver srt, allow network egress to this domain "
+                          "(repeat for multiple). Empty = no network. Supports wildcards like *.example.com")
     run.add_argument("--persona", help="path to a persona charter.md to load as system prompt (Clawpilot adapter)")
     run.add_argument("--web", action="store_true", help="enable fetch_url tool")
     run.add_argument("--clawpilot", action="store_true", help="enable skill_load/charter_load/workiq bridge tools")
@@ -409,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
                 enable_clawpilot=enable_clawpilot,
                 extra_system=extra_system,
                 max_iters=args.max_iters,
+                sandbox_driver=args.sandbox_driver,
+                egress_allowlist=args.egress_allow,
             )
         else:
             if args.system_file:
@@ -431,6 +440,8 @@ def main(argv: list[str] | None = None) -> int:
                 enable_web=args.web,
                 enable_clawpilot=enable_clawpilot,
                 max_iters=args.max_iters,
+                sandbox_driver=args.sandbox_driver,
+                egress_allowlist=args.egress_allow,
             )
         try:
             if args.envelope_writable:

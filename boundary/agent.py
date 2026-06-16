@@ -26,6 +26,8 @@ class Agent:
         enable_web: bool = False,
         enable_clawpilot: bool = False,
         shell_timeout: int = 60,
+        sandbox_driver: str = "seatbelt",
+        egress_allowlist: list[str] | None = None,
         max_iters: int = 25,
         transcript: Transcript | None | bool = True,
         client_kwargs: dict | None = None,
@@ -41,7 +43,10 @@ class Agent:
         if enable_fs:
             register_fs_tools(self.tools, self.workspace)
         if enable_shell:
-            register_shell_tools(self.tools, self.workspace, timeout=shell_timeout, allow=True)
+            register_shell_tools(
+                self.tools, self.workspace, timeout=shell_timeout, allow=True,
+                driver=sandbox_driver, egress_allowlist=egress_allowlist,
+            )
         if enable_web:
             register_web_tools(self.tools)
         if enable_clawpilot:
