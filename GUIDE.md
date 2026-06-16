@@ -17,15 +17,45 @@ Boundary runs tool-calling agents inside a pre-declared envelope. Three modes:
 
 Every run is wrapped in an **envelope** (write allowlist, staging pivot, spend caps, ambiguity halt) and can be graded by the **Third Umpire** (property checks against the envelope, not against the agent's "quality").
 
-Lives at `~/projects/boundary/`. Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
+Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
 
 ---
 
-## One-time setup
+## Install
+
+Public alpha. Recommended path is an isolated install via `pipx`:
 
 ```bash
-cd ~/projects/boundary
-source .venv/bin/activate          # already created tonight
+pipx install git+https://github.com/mavaali/boundary.git
+boundary --help
+```
+
+Or with a venv:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install git+https://github.com/mavaali/boundary.git
+```
+
+### Contributor setup (editable install)
+
+For local development against a clone:
+
+```bash
+git clone https://github.com/mavaali/boundary.git
+cd boundary
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+This is the right setup if you intend to edit Boundary's source. End users do
+not need a clone.
+
+---
+
+## One-time auth
+
+```bash
 boundary copilot status           # should say "oauth token: present"
 ```
 
@@ -126,6 +156,16 @@ Install on macOS launchd:
 boundary pipeline install examples/pipelines/squad-docs-health.yaml
 ```
 
+### Notifications (`notify:`)
+
+Pipeline and schedule YAMLs accept a `notify:` field (e.g. `digest_daily`) that
+is consumed by an external drain. The drain itself is **not part of the
+packaged Boundary release** — it is a private/local integration owned by the
+operator (Scout/Teams hooks in the author's setup). Treat `notify:` as a tag
+that some out-of-band process can read; if you don't run such a drain, leave
+the field as-is or omit it. A generic `boundary scout drain` is on the
+roadmap.
+
 ---
 
 ## Mode 1 — Interactive run (you know what you want)
@@ -184,7 +224,7 @@ boundary run --overlay mihir --role natasha --task "Review this repo"
 [iterations=17 stop=stop wall=42.3s]
 [envelope: writes=1/3 attempted=1 external=0]
 [spend: in=78,243 (cached=12,500) out=4,103 est=$0.2569]
-[transcript: /Users/mihirwagle/.boundary/transcripts/...]
+[transcript: ~/.boundary/transcripts/...]
 ```
 
 ---
@@ -738,15 +778,15 @@ chmod 600 ~/.config/github-copilot/apps.json
 
 | What | Where |
 |---|---|
-| Source | `~/projects/boundary/` |
-| Venv | `~/projects/boundary/.venv/` |
+| Source (contributor) | wherever you cloned the repo |
+| Venv (contributor) | `<clone>/.venv/` |
 | Copilot token | `~/.config/github-copilot/apps.json` |
 | Transcripts | `~/.boundary/transcripts/*.jsonl` |
 | Run history DB | `~/.boundary/history.db` |
 | Per-schedule locks | `~/.boundary/locks/<name>.lock` |
 | launchd plists | `~/Library/LaunchAgents/io.boundary.schedule.*.plist` |
 | launchd logs | `~/.boundary/launchd-logs/*.log` |
-| Example schedules | `~/projects/boundary/examples/schedules/` |
+| Bundled examples | `<install-prefix>/share/boundary/examples/` (pip/pipx data files) or `<clone>/examples/` |
 
 ---
 

@@ -8,6 +8,33 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-16
+
+The packageability milestone: Boundary becomes installable as a public alpha
+via `pipx install git+https://github.com/mavaali/boundary.git`. Adds
+squad-planned pipelines and pipeline launchd support.
+
+### Added
+- **Squad-planned pipelines** (`boundary pipeline-run <yaml>`) — one squad
+  planner runs first inside its own envelope, writes a shared plan, and is
+  graded by the Third Umpire; each persona step then runs as a normal Boundary
+  envelope and must cite the plan in its `stage_proposal`. Two layers of
+  staging (squad-level and persona-level) without losing per-step bounds.
+- **Pipeline launchd support** (`boundary pipeline install <yaml>`) — install,
+  list, and uninstall pipelines as headless macOS LaunchAgents, mirroring the
+  existing schedule install flow.
+- **Generic pipeline example** — `examples/pipelines/squad-docs-health.yaml`
+  ships with the package (`share/boundary/examples/pipelines/`) so a fresh
+  install can immediately run `boundary pipeline validate <example>`.
+- **Public install path in README/GUIDE** — `pipx install git+...` is now the
+  documented user flow; the `.venv` setup is demoted to the contributor
+  section.
+
+### Notes
+- Scout/Teams notification hooks remain a private integration (consumed via
+  `notify:` in pipeline/schedule YAMLs) and are not part of the public package
+  guarantees. A generic `boundary scout drain` is on the roadmap.
+
 ## [0.3.0] - 2026-06-16
 
 The lethal-trifecta-closing milestone: information-flow taint dimension, plus a
@@ -84,6 +111,7 @@ guarantees, and OS-enforced network egress.
 Initial Boundary release — envelope runner, Fielding Coach planner, Third Umpire
 post-run grading, headless scheduling (launchd), overlays.
 
+[0.4.0]: https://github.com/mavaali/boundary/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mavaali/boundary/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mavaali/boundary/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mavaali/boundary/releases/tag/v0.1.0
