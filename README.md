@@ -115,11 +115,31 @@ rather than from scratch. That is Boundary's differentiator.
 - Pipeline YAMLs for multi-persona runs
 - A sample overlay that maps role names to local prompt files
 
+## Install
+
+Public alpha — pin to a tag once you have a workflow you like.
+
+```bash
+# Recommended: isolated install via pipx
+pipx install git+https://github.com/mavaali/boundary.git
+
+# Or in a venv
+python3 -m venv .venv && source .venv/bin/activate
+pip install git+https://github.com/mavaali/boundary.git
+```
+
+Requires Python 3.10+. After install, authenticate the Copilot backend once:
+
+```bash
+boundary copilot login           # device-code flow, opens https://github.com/login/device
+boundary copilot status          # should say "oauth token: present"
+```
+
+For local development (clone + editable install), see [GUIDE.md](GUIDE.md#contributor-setup-editable-install).
+
 ## Quick start
 
 ```bash
-cd ~/projects/boundary
-source .venv/bin/activate
 boundary copilot login           # first-time only
 
 boundary run \
@@ -130,6 +150,9 @@ boundary run \
   --max-iters 25 \
   --task "Summarize the repo and identify one improvement." --verbose
 ```
+
+> The `examples/` tree ships with the package. Copy it next to your working
+> directory or pass absolute paths if you installed via `pipx`.
 
 ## Doctrine
 
