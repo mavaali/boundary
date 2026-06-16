@@ -267,6 +267,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             stop_on_ambiguity=stop_on_ambiguity,
             on_commit=config.on_commit,
             commit_allowlist=list(config.commit_allowlist or []),
+            on_taint=config.on_taint,
         )
         runner = EnvelopeRunner(agent, env)
         result = runner.run(rendered_task, verbose=verbose)

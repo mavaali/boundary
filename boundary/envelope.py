@@ -121,6 +121,13 @@ class Envelope:
     # Per-tool allowlist. Only checked when on_commit == "allow". Empty list
     # under "allow" means ALL commit tools are allowed (use with caution).
     commit_allowlist: list[str] = field(default_factory=list)
+    # Taint policy (Item 3). When the run has read untrusted external content
+    # (fetch_url / outside-workspace), a subsequent write is a potential exfil
+    # channel. Coarse, run-level taint:
+    #   "warn"   — record a taint_flow event but allow the write (default).
+    #   "refuse" — block the write; tainted content must not reach a writable sink.
+    #   "allow"  — disable the check (a downgrade; surfaced by the Third Umpire).
+    on_taint: str = "warn"
     # USD per 1M tokens by model id. "cached" defaults to 0.1× input if absent.
     # Source: published rates as of 2026.
     token_rates: dict = field(default_factory=lambda: {
@@ -163,7 +170,7 @@ class Envelope:
 
 @dataclass
 class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked"
+    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow"
     tool: str
     detail: str
     iteration: int
@@ -245,6 +252,30 @@ def _make_enforced_tool(
         # Helper: did the underlying tool return a soft error sentinel?
         def _is_error_result(r) -> bool:
             return isinstance(r, str) and r.startswith("ERROR:")
+
+        # 1b. Taint gate (Item 3) — tainted (untrusted external) content flowing
+        #     into a writable sink. Coarse: once any tainted read has happened,
+        #     every write/commit is a potential exfil channel.
+        if (
+            envelope.on_taint != "allow"
+            and counters.get("tainted_reads", 0) > 0
+            and (base.kind in ("write", "commit") or base.name == "bash")
+        ):
+            sources = counters.get("tainted_sources", [])  # type: ignore[assignment]
+            events.append(EnvelopeEvent(
+                "taint_flow", base.name,
+                f"on_taint={envelope.on_taint} tainted_reads={counters['tainted_reads']} "
+                f"sources={sources[:3]}", i,
+            ))
+            if envelope.on_taint == "refuse":
+                return (
+                    f"ENVELOPE REFUSED: this run read untrusted external content "
+                    f"(taint sources: {sources[:3]}) and a write to a shared/writable path "
+                    f"is a potential exfiltration channel (on_taint=refuse). Do not route "
+                    f"untrusted content into a write. If this flow is intentional and safe, "
+                    f"re-scope with on_taint=warn, or stage only trusted/derived content."
+                )
+            # warn: record the flow, let the write proceed.
 
         # 2. append_file — continuation of a prior write_file. Counted against
         #    max_appends, NOT max_writes. Lets the agent chunk a long write
@@ -424,6 +455,11 @@ def _make_enforced_tool(
             if counters["external_calls"] > envelope.max_external:
                 events.append(EnvelopeEvent("limit_hit", base.name, f"max_external={envelope.max_external}", i))
                 return f"ENVELOPE REFUSED: max_external ({envelope.max_external}) reached."
+            # Taint labeling (Item 3): external content is untrusted. Mark the run
+            # tainted so a later write to a writable sink trips the taint gate.
+            counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+            src = kwargs.get("url") or kwargs.get("query") or base.name
+            counters.setdefault("tainted_sources", []).append(str(src)[:80])  # type: ignore[arg-type]
 
         # 7. Default path — read tools and unmetered externals
         kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
@@ -471,7 +507,13 @@ def _stage_proposal_tool(counters: dict[str, int], events: list[EnvelopeEvent], 
     ) -> str:
         counters["staged"] = 1
         counters["stage_calls"] = counters.get("stage_calls", 0) + 1
-        summary = f"thesis={thesis[:120]} cost_class={cost_class} intended_write={intended_write or '(none)'}"
+        # Record the taint set that fed the thesis/evidence so far (Item 3).
+        taint = counters.get("tainted_reads", 0)
+        taint_note = f" taint={taint}({counters.get('tainted_sources', [])[:3]})" if taint else ""
+        summary = (
+            f"thesis={thesis[:120]} cost_class={cost_class} "
+            f"intended_write={intended_write or '(none)'}{taint_note}"
+        )
         events.append(EnvelopeEvent("staged", "stage_proposal", summary, iter_ref[0]))
         return (
             "STAGED: proposal accepted. Continue only with reads that test, kill, "
@@ -797,6 +839,8 @@ class EnvelopeRunner:
                 model=model_name,
                 on_commit=self.envelope.on_commit,
                 commit_allowlist=list(self.envelope.commit_allowlist or []),
+                on_taint=self.envelope.on_taint,
+                tainted_reads=c.get("tainted_reads", 0),
                 staged=bool(c.get("staged", 0)),
                 unstaged_reads=c.get("unstaged_reads", 0),
                 stage_calls=c.get("stage_calls", 0),

@@ -131,6 +131,8 @@ class ThirdUmpire:
             "model": (envelope_end or {}).get("model"),
             "on_commit": (envelope_end or {}).get("on_commit"),
             "commit_allowlist": (envelope_end or {}).get("commit_allowlist", []),
+            "on_taint": (envelope_end or {}).get("on_taint"),
+            "tainted_reads": (envelope_end or {}).get("tainted_reads", 0),
             "writable_paths": (envelope_start or {}).get("writable_paths", []),
             "require_staging": (envelope_start or {}).get("require_staging", False),
             "staged": (envelope_end or {}).get("staged", False),
@@ -383,7 +385,22 @@ class ThirdUmpire:
                 severity="warn",
             ))
 
-        # Check 13: envelope downgrades — guardrails the operator disabled.
+        # Check 13: taint flow — untrusted external content reaching writable sinks.
+        taint_events = [e for e in envelope_events if e["kind"] == "taint_flow"]
+        if taint_events:
+            on_taint = (envelope_end or {}).get("on_taint")
+            report.checks.append(CheckResult(
+                "taint_flow",
+                passed=False,
+                detail=(
+                    f"{len(taint_events)} taint_flow event(s) — untrusted content reached a "
+                    f"writable sink (on_taint={on_taint!r}). "
+                    f"e.g. {taint_events[0]['tool']}: {taint_events[0]['detail'][:120]}"
+                ),
+                severity="warn",
+            ))
+
+        # Check 14: envelope downgrades — guardrails the operator disabled.
         # A run that turned off a gate must be visibly distinct from one that
         # never needed it.
         downgrades = downgrade_tags(

@@ -147,6 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default=None,
                      help="commit-tool policy (refuse|queue|ask|allow). If omitted and commit "
                           "tools are registered, you'll be prompted interactively.")
+    run.add_argument("--on-taint", choices=["refuse", "warn", "allow"], default="warn",
+                     help="taint policy: what happens when untrusted external content (fetch_url) "
+                          "could flow into a write. warn (default) records a taint_flow event, "
+                          "refuse blocks the write, allow disables the check (a downgrade).")
     run.add_argument("--commit-allow", action="append", default=[],
                      help="under --on-commit=allow, name a specific commit tool to permit "
                           "(repeat for multiple). Empty list means all commit tools.")
@@ -465,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_wall_seconds=args.envelope_max_wall_seconds,
                     on_commit=on_commit,
                     commit_allowlist=commit_allowlist,
+                    on_taint=args.on_taint,
                 )
                 runner = EnvelopeRunner(agent, env)
                 result = runner.run(args.task, verbose=args.verbose)
