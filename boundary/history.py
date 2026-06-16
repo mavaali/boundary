@@ -1,4 +1,4 @@
-"""Run history — SQLite ledger of every headless run + Fury verdict."""
+"""Run history — SQLite ledger of every headless run + Third Umpire verdict."""
 from __future__ import annotations
 import json
 import sqlite3
@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS runs (
     cached_input_tokens INTEGER,
     estimated_dollars REAL,
     wall_seconds REAL,
-    fury_verdict TEXT,
-    fury_summary_json TEXT,
+    third_umpire_verdict TEXT,
+    third_umpire_summary_json TEXT,
     transcript_path TEXT,
     written_files_json TEXT,
     error TEXT
@@ -56,7 +56,25 @@ class History:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
+        self._migrate_legacy_columns()
         self._conn.executescript(SCHEMA)
+        self._conn.commit()
+
+    def _migrate_legacy_columns(self) -> None:
+        """Rename pre-rename columns (fury_*) on existing DBs so old history.db
+        keeps working after the Third Umpire rename. Idempotent; no-op on fresh
+        DBs and on DBs already migrated."""
+        existing = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        renames = {
+            "fury_verdict": "third_umpire_verdict",
+            "fury_summary_json": "third_umpire_summary_json",
+        }
+        for old, new in renames.items():
+            if old in existing and new not in existing:
+                self._conn.execute(f"ALTER TABLE runs RENAME COLUMN {old} TO {new}")
         self._conn.commit()
 
     def record_run(self, *, schedule_name: str | None, persona: str | None,
@@ -64,7 +82,7 @@ class History:
                    stop_reason: str, iterations: int, writes_executed: int,
                    input_tokens: int, output_tokens: int, cached_input_tokens: int,
                    estimated_dollars: float, wall_seconds: float,
-                   fury_verdict: str | None, fury_summary: dict | None,
+                   third_umpire_verdict: str | None, third_umpire_summary: dict | None,
                    transcript_path: str | None, written_files: list[str],
                    error: str | None = None) -> int:
         cur = self._conn.execute(
@@ -73,14 +91,14 @@ class History:
                 stop_reason, iterations, writes_executed,
                 input_tokens, output_tokens, cached_input_tokens,
                 estimated_dollars, wall_seconds,
-                fury_verdict, fury_summary_json, transcript_path,
+                third_umpire_verdict, third_umpire_summary_json, transcript_path,
                 written_files_json, error
             ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?)""",
             (started_at, ended_at, schedule_name, persona, workspace,
              stop_reason, iterations, writes_executed,
              input_tokens, output_tokens, cached_input_tokens,
              estimated_dollars, wall_seconds,
-             fury_verdict, json.dumps(fury_summary or {}), transcript_path,
+             third_umpire_verdict, json.dumps(third_umpire_summary or {}), transcript_path,
              json.dumps(written_files), error),
         )
         self._conn.commit()

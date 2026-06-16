@@ -1,6 +1,6 @@
 from boundary.agent import Agent
-from boundary.fury import Fury, ThirdUmpire
-from boundary.stark import FieldingCoach, Stark
+from boundary.third_umpire import ThirdUmpire
+from boundary.fielding_coach import FieldingCoach
 from boundary.tools.registry import Tool, ToolRegistry
 
 __all__ = [
@@ -9,6 +9,4 @@ __all__ = [
     "ToolRegistry",
     "FieldingCoach",
     "ThirdUmpire",
-    "Stark",
-    "Fury",
 ]

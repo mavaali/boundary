@@ -51,20 +51,19 @@ def main(argv: list[str] | None = None) -> int:
     cp_sub.add_parser("status", help="show current Copilot auth status")
     cp_sub.add_parser("models", help="list available Copilot models")
 
-    stark = sub.add_parser(
+    fc = sub.add_parser(
         "fielding-coach",
-        aliases=["stark"],
         help="planner layer — propose & dispatch an envelope from a loose prompt",
     )
-    stark.add_argument("prompt", help="loose user prompt to translate into an envelope")
-    stark.add_argument("--workspace", default=None)
-    stark.add_argument("--overlay", help="overlay name/path for workspace defaults and local skin")
-    stark.add_argument("--auto", action="store_true", help="skip approval gate; dispatch the proposal immediately")
-    stark.add_argument("--client", default="copilot")
-    stark.add_argument("--model", default=None)
-    stark.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default=None)
-    stark.add_argument("--commit-allow", action="append", default=[])
-    stark.add_argument("--verbose", "-v", action="store_true")
+    fc.add_argument("prompt", help="loose user prompt to translate into an envelope")
+    fc.add_argument("--workspace", default=None)
+    fc.add_argument("--overlay", help="overlay name/path for workspace defaults and local skin")
+    fc.add_argument("--auto", action="store_true", help="skip approval gate; dispatch the proposal immediately")
+    fc.add_argument("--client", default="copilot")
+    fc.add_argument("--model", default=None)
+    fc.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default=None)
+    fc.add_argument("--commit-allow", action="append", default=[])
+    fc.add_argument("--verbose", "-v", action="store_true")
 
     # Phase 3: schedules
     sched_inst = sub.add_parser("schedule", help="install/uninstall/list scheduled headless runs (launchd)")
@@ -92,12 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     rq_resolve.add_argument("id", type=int)
     rq_resolve.add_argument("resolution", help="free-text resolution note")
 
-    fury = sub.add_parser(
+    tu = sub.add_parser(
         "third-umpire",
-        aliases=["fury"],
         help="grade a transcript against envelope eval",
     )
-    fury.add_argument("transcript", help="path to a JSONL transcript")
+    tu.add_argument("transcript", help="path to a JSONL transcript")
 
     overlays = sub.add_parser("overlays", help="list/show available overlays")
     overlays_sub = overlays.add_subparsers(dest="overlays_cmd", required=True)
@@ -144,15 +142,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
 
-    if args.cmd in ("fielding-coach", "stark"):
-        from boundary.stark import FieldingCoach, dispatch
-        from boundary.fury import ThirdUmpire
+    if args.cmd == "fielding-coach":
+        from boundary.fielding_coach import FieldingCoach, dispatch
+        from boundary.third_umpire import ThirdUmpire
         overlay = Overlay.load(args.overlay) if args.overlay else None
         workspace = overlay.workspace_or(args.workspace) if overlay else args.workspace
         if not workspace:
             print("ERROR: --workspace is required unless the overlay provides default_workspace")
             return 2
-        role_label = "stark" if args.cmd == "stark" else "fielding-coach"
+        role_label = "fielding-coach"
         s = FieldingCoach(client=args.client, model=args.model or "claude-sonnet-4.5")
         print(f"[{role_label}] proposing envelope...")
         proposal = s.propose(args.prompt, workspace_hint=workspace)
@@ -177,14 +175,11 @@ def main(argv: list[str] | None = None) -> int:
                 on_commit = "queue" if resp.startswith("q") else ("ask" if resp.startswith("a") else "refuse")
         if not args.auto:
             try:
-                resp = input(f"\n[{role_label}] dispatch this envelope? [y/N/edit] ").strip().lower()
+                resp = input(f"\n[{role_label}] dispatch this envelope? [y/N] ").strip().lower()
             except EOFError:
                 resp = "n"
-            if resp == "edit":
-                print(f"[{role_label}] edit not implemented in CLI yet — re-run with a tightened prompt or use the Python API")
-                return 1
             if resp != "y":
-                print(f"[{role_label}] cancelled.")
+                print(f"[{role_label}] cancelled (re-run with a tightened prompt to revise).")
                 return 1
         print(f"\n[{role_label}] dispatching (on_commit={on_commit})...\n")
         result = dispatch(
@@ -195,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         print(result.loop_result.final_message.content or "(no content)")
         print(f"\n[envelope: writes={result.writes_executed}/{proposal.max_writes} attempted={result.writes_attempted} appends={result.appends_executed} external={result.external_calls} halted={result.halted_for_ambiguity}]")
         # auto Third Umpire
-        from boundary.fury import ThirdUmpire
+        from boundary.third_umpire import ThirdUmpire
         # find latest transcript by mtime
         tx_dir = Path.home() / ".boundary" / "transcripts"
         latest = max(tx_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
@@ -275,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"[run] {cfg.name} ({cfg.persona} @ {cfg.workspace})")
         out = run_headless(cfg, verbose=args.verbose)
-        print(f"[done] run_id={out['run_id']} stop={out['stop_reason']} fury={out['fury_verdict']} "
+        print(f"[done] run_id={out['run_id']} stop={out['stop_reason']} umpire={out['third_umpire_verdict']} "
               f"writes={out['writes']} ${out['dollars']:.4f} {out['wall_seconds']:.1f}s")
         if out.get("review_id"):
             print(f"[review] queued as review_id={out['review_id']} — see `boundary review-queue list`")
@@ -294,9 +289,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         for r in rows:
             ts = _dt.datetime.fromtimestamp(r["started_at"]).strftime("%Y-%m-%d %H:%M")
-            verdict = (r["fury_verdict"] or "-")
+            verdict = (r["third_umpire_verdict"] or "-")
             print(f"  {r['id']:4d}  {ts}  {r['schedule_name'] or '(adhoc)':30s} {r['persona'] or '-':10s} "
-                  f"stop={r['stop_reason']:14s} fury={verdict:5s} "
+                  f"stop={r['stop_reason']:14s} umpire={verdict:5s} "
                   f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s")
         return 0
 
@@ -323,8 +318,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      resolve: boundary review-queue resolve {r['id']} 'your note'")
         return 0
 
-    if args.cmd in ("third-umpire", "fury"):
-        from boundary.fury import ThirdUmpire
+    if args.cmd == "third-umpire":
+        from boundary.third_umpire import ThirdUmpire
         report = ThirdUmpire.grade(args.transcript)
         print(report.markdown())
         return 0 if report.verdict != "FAIL" else 2

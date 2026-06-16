@@ -4,8 +4,6 @@ The Third Umpire is not an agent. It runs against a completed transcript and
 reports whether the envelope held. The eval target is the envelope, not the
 agent's output.
 
-`Fury` remains as a backwards-compatible local alias.
-
 Usage:
     report = ThirdUmpire.grade(transcript_path, envelope)
     print(report.markdown())
@@ -39,7 +37,7 @@ class CheckResult:
 
 
 @dataclass
-class FuryReport:
+class ThirdUmpireReport:
     transcript_path: str
     checks: list[CheckResult] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
@@ -87,9 +85,9 @@ class ThirdUmpire:
         return events
 
     @staticmethod
-    def grade(transcript_path: str | Path, envelope: Envelope | None = None) -> FuryReport:
+    def grade(transcript_path: str | Path, envelope: Envelope | None = None) -> ThirdUmpireReport:
         events = ThirdUmpire._load(transcript_path)
-        report = FuryReport(transcript_path=str(transcript_path))
+        report = ThirdUmpireReport(transcript_path=str(transcript_path))
 
         envelope_start = next((e for e in events if e.get("type") == "envelope_start"), None)
         envelope_end = next((e for e in events if e.get("type") == "envelope_end"), None)
@@ -391,5 +389,3 @@ def grade_cli(transcript_path: str | Path) -> str:
     report = ThirdUmpire.grade(transcript_path)
     return report.markdown()
 
-
-Fury = ThirdUmpire

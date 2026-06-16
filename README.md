@@ -14,8 +14,6 @@ delegate to, but not safe enough to leave unsupervised.
 
 Every envelope run can be reviewed by the **Third Umpire**: property checks against the envelope spec, not against the agent's prose quality.
 
-Backwards-compatible local aliases remain available: `stark` for `fielding-coach`, and `fury` for `third-umpire`.
-
 ## Overlays
 
 Keep the core generic and put local skins in overlays:
