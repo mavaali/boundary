@@ -254,6 +254,7 @@ def test_bash_commit_routes_through_commit_policy(tmp_path):
     assert counters.get("commit_executed", 0) == 0
 
 
+@pytest.mark.skipif(not SANDBOX_AVAILABLE, reason="macOS sandbox-exec required")
 def test_bash_commit_executes_when_allowed(tmp_path):
     ws = Workspace(root=tmp_path)
     base = ToolRegistry()
