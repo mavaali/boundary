@@ -41,6 +41,8 @@ class ScheduleConfig:
     on_commit: CommitPolicy = "refuse"
     commit_allowlist: list[str] = field(default_factory=list)
     on_taint: str = "warn"
+    sandbox_driver: str = "seatbelt"
+    egress_allowlist: list[str] = field(default_factory=list)
     client: str = "copilot"
     model: str | None = None
     notify: Any = "digest_daily"        # informational, or a notify config block
@@ -70,6 +72,8 @@ class ScheduleConfig:
             on_failure=data.get("on_failure", "digest"),
             on_commit=data.get("on_commit", "refuse"),
             on_taint=data.get("on_taint", "warn"),
+            sandbox_driver=data.get("sandbox_driver", "seatbelt"),
+            egress_allowlist=list(data.get("egress_allow", []) or []),
             commit_allowlist=list(data.get("commit_allowlist", []) or []),
             client=data.get("client", "copilot"),
             model=data.get("model"),

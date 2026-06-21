@@ -245,6 +245,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             enable_clawpilot=True,
             max_iters=config.max_iters,
             extra_system=extra_system,
+            sandbox_driver=config.sandbox_driver,
+            egress_allowlist=config.egress_allowlist,
         )
         # Stamp charter hash into the transcript header for post-hoc grouping
         if agent.transcript:
