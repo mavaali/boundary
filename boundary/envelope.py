@@ -235,15 +235,6 @@ def _make_enforced_tool(
                     "next read must test or revise the staged answer."
                 )
 
-        # D: bash can fetch/exfil; record taint before staging gate so attempted
-        # bash calls are tracked even when staging blocks execution.
-        if base.name == "bash" and envelope.allow_bash and sandbox_driver != "srt":
-            counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
-            _bash_src = "bash:" + (kwargs.get("command", "") if isinstance(kwargs.get("command"), str) else "")[:60]
-            counters.setdefault("tainted_sources", []).append(_bash_src)
-            if store is not None:
-                store.mark_source(_bash_src)
-
         if (
             staging_required
             and counters.get("staged", 0) == 0
@@ -400,6 +391,15 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
+            # D: bash is a tainting SOURCE — it can fetch/exfil when egress is not
+            # OS-bounded. Taint only after it actually executed (a refused bash
+            # pulled nothing); subsequent write/commit/bash sinks then get gated.
+            if sandbox_driver != "srt":
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                _bash_src = "bash:" + cmd_str[:60]
+                counters.setdefault("tainted_sources", []).append(_bash_src)
+                if store is not None:
+                    store.mark_source(_bash_src)
             events.append(EnvelopeEvent("write_allowed", base.name, "bash", i))
             return result
 

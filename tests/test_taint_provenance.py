@@ -78,6 +78,7 @@ def test_write_while_tainted_marks_output(tmp_path, monkeypatch):
 def test_bash_taints_unless_srt(tmp_path, monkeypatch):
     monkeypatch.setenv("BOUNDARY_HOME", str(tmp_path / "bh"))
     env = Envelope(writable_paths=["out.md"], on_taint="warn", allow_bash=True)
+    env.require_staging = False  # isolate bash-taint from the staging gate
     counters, events = {}, []
 
     def bash(command: str, reason: str = "") -> str:
