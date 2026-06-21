@@ -251,6 +251,8 @@ def run_squad_planning(config: PipelineConfig, *, db_path: str | Path | None = N
             client_kwargs={"model": planning.model or config.model} if (planning.model or config.model) else {},
             enable_clawpilot=True,
             max_iters=planning.max_iters,
+            sandbox_driver=planning.sandbox_driver,
+            egress_allowlist=planning.egress_allowlist,
         )
         if agent.transcript:
             agent.transcript.log(
