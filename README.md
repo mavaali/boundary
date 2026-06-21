@@ -66,14 +66,23 @@ now touches all three legs:
 | Untrusted content drives action | **Bounded** — the staging pivot forces a committed thesis before deep reads/writes, and the taint gate refuses/warns when untrusted content flows into a writable sink (the write-as-exfil channel) |
 | External communication | **Bounded** — commit-tool gating + write allowlist bound irreversible/outbound actions; with `--sandbox-driver srt` an OS-enforced egress allowlist bounds network exfiltration across the whole process tree (default `seatbelt` driver does not) |
 
-The taint dimension is coarse (run-level): once *any* untrusted source is read,
-writes are flagged — it does not track which bytes flowed where. Default is
-`warn` (a verdict line, not a block); `refuse` blocks all writes post-taint.
-Per-value / per-sink granularity is future work.
+The taint dimension is coarse and **file-granular** — it tracks *which files* are
+untrusted, not which bytes. A run is tainted when it fetches external content,
+reads a file a prior run marked tainted, or runs `bash` without OS-bounded egress
+(`--sandbox-driver srt`); a write made while tainted marks its output tainted
+too. The ledger persists per workspace (outside it, so the sandboxed agent can't
+clear it), so taint carries **across pipeline stages and separate scheduled
+runs** — the stage that finally commits is no longer blind to what an earlier
+stage fetched. Default is `warn` (a verdict line, not a block); `refuse` blocks
+the write in any run that became tainted. Inspect/clear with `boundary taint`.
 
-The honest gap: an allowlisted write is itself an exfiltration channel if its
-content is tainted. Closing it is information-flow tracking — on the roadmap, not
-shipped.
+The honest gaps: (1) it is file-granular, not per-value — reading a tainted file
+taints the whole run even if no tainted byte reaches the output (an
+over-approximation, in the safe direction); (2) it catches untrusted-content →
+**write/commit** sinks, not exfil through a second `fetch_url` (data in a URL is
+an external *read*, not a gated sink) — that channel is closed only by `srt`'s OS
+egress allowlist, and a tainted run without `srt` is flagged `egress_uncontained`
+(a Third Umpire failure). Per-value information-flow tracking remains future work.
 
 ### The six secure-agent design patterns
 

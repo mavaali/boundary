@@ -123,9 +123,14 @@ class Envelope:
     # Per-tool allowlist. Only checked when on_commit == "allow". Empty list
     # under "allow" means ALL commit tools are allowed (use with caution).
     commit_allowlist: list[str] = field(default_factory=list)
-    # Taint policy (Item 3). When the run has read untrusted external content
-    # (fetch_url / outside-workspace), a subsequent write is a potential exfil
-    # channel. Coarse, run-level taint:
+    # Taint policy (Item 3). A run becomes "tainted" when it handles untrusted
+    # content: a fetch_url (external), a read_file/grep of a file the persisted
+    # ledger marks tainted, or a bash call when egress is not OS-bounded (driver
+    # != srt). A subsequent write/commit to a writable sink is then a potential
+    # exfil channel. Taint is coarse and file-granular (which files, not which
+    # bytes) and persists in a per-workspace ledger (see boundary/taint.py) so it
+    # carries across pipeline stages and separate runs; a write done while tainted
+    # marks its output file tainted too.
     #   "warn"   — record a taint_flow event but allow the write (default).
     #   "refuse" — block the write; tainted content must not reach a writable sink.
     #   "allow"  — disable the check (a downgrade; surfaced by the Third Umpire).
