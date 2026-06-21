@@ -40,7 +40,7 @@ Consequences (both verified against code):
 
 A persisted ledger of untrusted provenance for one workspace.
 
-- **Location:** `~/.boundary/taint/<workspace-hash>.json`, where `<workspace-hash>` = `sha256(str(workspace_root.resolve()))[:16]`.
+- **Location:** `$BOUNDARY_HOME/taint/<workspace-hash>.json`, where `BOUNDARY_HOME` defaults to `~/.boundary` and `<workspace-hash>` = `sha256(str(workspace_root.resolve()))[:16]`. The `BOUNDARY_HOME` override is a **decided** part of the design (not optional): tests set it to a `tmp_path` so they never touch the real `~/.boundary/`, and it is the single knob for relocating the ledger root.
   - **Why outside the workspace:** the agent is jailed to the workspace (`workspace.py`), and `bash` can write anywhere *inside* it — a workspace-local ledger would be agent-clearable (`echo '{}' > .boundary/taint.json`). `_jail_env` (`boundary/tools/sandbox.py:27-42`) repoints `HOME` into the workspace for bash, so the real `~/.boundary/` is unreachable by the jailed agent and by sandboxed bash.
 - **Schema (JSON):**
   ```json
@@ -70,18 +70,27 @@ Changes inside the enforced wrapper:
 1. **External (fetch_url) — source + taint (B):** unchanged `tainted_reads++`; additionally `store.mark_source(url)`.
 2. **Provenance read (C):** for content-returning read tools — `read_file` and `grep` — if `store.is_tainted(path)` (for `grep`, if any scanned file is tainted; v1 simplification: taint when the `grep` glob could include a tainted file — see Open Questions), increment `tainted_reads` and record a source `taint-file:<path>`. `list_dir`/`glob`/`count_matches` return names/counts only and do **not** taint.
 3. **Write propagation:** when a write tool (`write_file`, `edit_file`, `append_file`) executes **successfully while the run is tainted** (`tainted_reads > 0`), call `store.mark_file(path)`. (bash-written paths are unknowable and are not individually marked — see §5.)
-4. **bash (D):** when `base.name == "bash"` and `envelope.sandbox_driver != "srt"`, treat the call as a tainted read: `tainted_reads++` and `store.mark_source("bash:" + cmd[:60])`. Under `srt`, bash does **not** taint (egress is OS-bounded). This is evaluated before the existing commit-denylist/write-accounting logic, so the gate sees the taint on the *same* call's subsequent write accounting and on later calls.
-5. **taint_egress nudge (#2):** in the external branch, if `tainted_reads > 0` and the fetched URL's host is not in `envelope.egress_allowlist`, append a `taint_egress` (warn) event. Host parsed via `urllib.parse.urlsplit`. Labeled in docs as nudge-not-containment.
+4. **bash (D):** when `base.name == "bash"` and the run's `sandbox_driver != "srt"`, treat the call as a tainted read: `tainted_reads++` and `store.mark_source("bash:" + cmd[:60])`. Under `srt`, bash does **not** taint (egress is OS-bounded). This is evaluated before the existing commit-denylist/write-accounting logic, so the gate sees the taint on the *same* call's subsequent write accounting and on later calls.
+5. **taint_egress nudge (#2):** in the external branch, if `tainted_reads > 0` and the fetched URL's host is not in the run's `egress_allowlist`, append a `taint_egress` (warn) event. Host parsed via `urllib.parse.urlsplit`. Labeled in docs as nudge-not-containment.
+
+The `sandbox_driver` and `egress_allowlist` used in steps 4–5 are read from the **Agent** (the single source of truth — see §3.3), passed into `_make_enforced_tool` by `EnvelopeRunner` alongside the existing `counters`/`store`.
 
 The existing taint gate (`envelope.py:259-278`) is unchanged in structure; it now simply sees a richer `tainted_reads`.
 
-### 3.3 New `Envelope` fields
+### 3.3 Threading the sandbox driver + egress allowlist (single source of truth)
 
-Add to the `Envelope` dataclass (`envelope.py:86`):
-- `sandbox_driver: str = "seatbelt"`
-- `egress_allowlist: list[str] = field(default_factory=list)`
+The driver/allowlist actually *enforced* live on the **Agent** today: `Agent.__init__(sandbox_driver="seatbelt", egress_allowlist=None)` builds the shell tool with them (`boundary/agent.py:29-48` → `boundary/tools/shell.py:13-25`). To avoid a second copy that can drift from what bash actually ran under (advisory from spec review), **the Agent stays the single source of truth** — do **not** add these as `Envelope` fields.
 
-Rationale: these are part of the run's safety policy, they must be serialized into the transcript for the Third Umpire, and `Envelope` is already the policy object the umpire's contract is built on. Populate from existing parsed args in `cli.py` (`run` handler), `headless.py`, and `pipeline.py` (each already knows `--sandbox-driver` / `--egress-allow`). Log both in the `envelope_end` event (`envelope.py:823-848`).
+- **Ensure the Agent retains them:** if `Agent` does not already store `self.sandbox_driver` / `self.egress_allowlist` (it currently takes them as constructor params and passes them straight to the shell tool), store them as attributes so `EnvelopeRunner` can read them.
+- **`EnvelopeRunner` reads from `self.agent`** and (a) passes `sandbox_driver`/`egress_allowlist` into `_make_enforced_tool` (for the D check and the taint_egress nudge, §3.2 steps 4–5) and (b) logs both into the `envelope_end` event (`envelope.py:823-848`) for the Third Umpire.
+
+**First-class wiring work — headless & pipeline cannot select `srt` today.** This is the gap the spec review caught and it is load-bearing: the `egress_uncontained` lock (§3.4) and acceptance tests #1, #2, #6 all run through the headless/pipeline path. `ScheduleConfig` (`boundary/schedule.py:18-77`) has **no** driver/egress field, and `load_persona` (`boundary/headless.py:240-248`) builds the Agent without a driver, so every scheduled and pipeline run is hard-pinned to `seatbelt`. The plan must:
+- Add `sandbox_driver: str = "seatbelt"` and `egress_allowlist: list[str]` fields to `ScheduleConfig` (dataclass + `ScheduleConfig.load` YAML parsing).
+- Thread them through `load_persona` (`boundary/adapters/clawpilot.py`) → `Agent`, and through `run_headless`.
+- Add pipeline-level defaulting: `PipelineConfig` defaults + per-step override, mirroring how `on_taint` is already defaulted (`boundary/pipeline.py:145`).
+- `cli.py` already passes both to the `Agent` (`cli.py:534-535, 558-559`) — no change needed there beyond reading them back off the Agent in the runner.
+
+Until this wiring exists, scheduled/pipeline taint runs would always fail `egress_uncontained`; with it, operators can opt a schedule or pipeline into `srt`.
 
 ### 3.4 Third Umpire (#1 lock) — `boundary/third_umpire.py`
 
@@ -134,12 +143,11 @@ New tests under `tests/` (+ `tests/redteam/` where adversarial):
 
 ## 8. Backward compatibility
 
-- New `Envelope` fields default to current behavior (`seatbelt`, empty allowlist).
+- New `ScheduleConfig` driver/egress fields default to current behavior (`seatbelt`, empty allowlist); the Agent already defaults the same way, so existing runs are unchanged.
 - `on_taint` default stays `warn`; no run is newly *blocked* unless the operator already chose `refuse`.
 - Old transcripts (no `sandbox_driver` in `envelope_end`) skip `egress_uncontained`.
 - First run after upgrade starts with an empty ledger; taint accrues from then on.
 
 ## 9. Open questions (resolve during planning)
 
-- **`grep` granularity:** taint the run when `grep`/`count_matches` scans a glob that *matches* a tainted file? Simpler v1: taint on `read_file` only; treat `grep` as content-returning and taint if any matched file is tainted; leave `count_matches` (counts only) untainted. Decide in planning whether `grep` is in or out for v1.
-- **Home-dir resolution under test:** tests must patch the ledger root (e.g. honor `BOUNDARY_HOME` env override) so they don't touch the real `~/.boundary/`. Add a `BOUNDARY_HOME` override read by `TaintStore`.
+- **`grep` granularity:** taint the run when `grep`/`count_matches` scans a glob that *matches* a tainted file? Simpler v1: taint on `read_file` only; treat `grep` as content-returning and taint if any matched file is tainted; leave `count_matches` (counts only) untainted. Decide in planning whether `grep` is in or out for v1. (`BOUNDARY_HOME` test override is resolved — see §3.1.)
