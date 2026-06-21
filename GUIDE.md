@@ -633,24 +633,43 @@ writable path becomes an exfiltration channel. That is the lethal trifecta's
 third leg.
 
 The **taint gate** (`--on-taint`, or `on_taint:` in a schedule YAML) closes it
-with coarse, run-level tracking:
+with coarse, **file-granular** tracking that persists across runs:
 
-- Reading untrusted external content (`fetch_url`) marks the run **tainted**.
-- After that, any write/commit to a writable sink trips a `taint_flow` event.
-- `--on-taint` decides what happens:
+- A run becomes **tainted** when it (a) fetches external content (`fetch_url`),
+  (b) reads — via `read_file` or `grep` — a file a prior run marked tainted, or
+  (c) runs `bash` while egress is not OS-bounded (`--sandbox-driver` ≠ `srt`).
+- A write/commit made **while the run is tainted** trips a `taint_flow` event,
+  and the file it writes is itself marked tainted.
+- The taint ledger persists per workspace under `$BOUNDARY_HOME/taint/` (default
+  `~/.boundary`), **outside** the workspace — the sandboxed agent (whose `HOME`
+  is repointed into the workspace) cannot read or clear it. Because it persists,
+  taint carries **across pipeline stages and separate scheduled runs**: the stage
+  that finally commits sees that an earlier stage fetched untrusted content.
+  Inspect or reset it with `boundary taint --show <ws>` / `boundary taint --clear <ws>`.
+- `--on-taint` decides what happens at the sink:
   - `warn` (default) — record the `taint_flow` event, let the write proceed.
-  - `refuse` — block the write; untrusted content must not reach a writable sink.
+  - `refuse` — block the write; tainted content must not reach a writable sink.
   - `allow` — disable the check (a **downgrade**; the Third Umpire flags it).
 
-A run that reads only workspace files and writes does **not** trip the gate — no
-false positive on the common case. The Third Umpire surfaces a `taint_flow` check
-in its verdict, and `stage_proposal` records the taint set that fed the thesis.
+A run that reads only untainted workspace files and writes does **not** trip the
+gate — taint follows the data, so a clean run is never gated just because the
+workspace holds tainted files elsewhere. The Third Umpire surfaces a `taint_flow`
+check, and — because the network exfil channel below is *not* closed here — a
+tainted run under a non-`srt` driver also gets an `egress_uncontained` **fail**.
 
-> **Coarse by design.** Once *any* untrusted source is read, all later writes are
-> flagged — it does not track which bytes flowed where. `warn` is the safe
-> default (a verdict line, not a block). `refuse` is aggressive: it blocks *every*
-> write post-taint, so reserve it for runs where no untrusted→write flow is ever
-> legitimate. Per-value / per-sink granularity is future work.
+> **What it is and isn't.** Coarse and file-granular: it tracks *which files* are
+> untrusted, not which bytes — reading a tainted file taints the whole run even if
+> no tainted byte reaches the output (over-approximation, in the safe direction),
+> and a `bash`-written file can't be individually attributed (the run is tainted,
+> not the specific output). It catches untrusted-content → **write/commit** sinks;
+> it does **not** catch exfil through a second `fetch_url` (encoding data into
+> `attacker.com/?d=…` is an external *read*, not a gated sink). That channel is
+> closed only by `--sandbox-driver srt` with a tight `--egress-allow`, which bounds
+> egress at the OS level over the whole process tree; absent it, the
+> `egress_uncontained` check fails the run. `refuse` blocks the write in any run
+> that became tainted — reserve it for workspaces where no untrusted→write flow is
+> ever legitimate, and pair it with `srt`. Taint is monotonic until
+> `boundary taint --clear`. Per-value / per-sink granularity is future work.
 
 ---
 

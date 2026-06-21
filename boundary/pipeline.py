@@ -55,6 +55,8 @@ class SquadPlanningConfig:
     on_ambiguity: str = "queue"
     on_commit: str = "refuse"
     on_taint: str = "warn"
+    sandbox_driver: str = "seatbelt"
+    egress_allowlist: list[str] = field(default_factory=list)
     commit_allowlist: list[str] = field(default_factory=list)
     model: str | None = None
     required: bool = True
@@ -78,6 +80,8 @@ class PipelineStep:
     on_ambiguity: str | None = None
     on_commit: str | None = None
     on_taint: str | None = None
+    sandbox_driver: str | None = None
+    egress_allowlist: list[str] | None = None
     commit_allowlist: list[str] = field(default_factory=list)
     model: str | None = None
     notify: Any = None
@@ -143,6 +147,8 @@ class PipelineConfig:
             on_ambiguity=step.on_ambiguity or self.defaults.get("on_ambiguity", "queue"),
             on_commit=step.on_commit or self.defaults.get("on_commit", "refuse"),
             on_taint=step.on_taint or self.defaults.get("on_taint", "warn"),
+            sandbox_driver=step.sandbox_driver or self.defaults.get("sandbox_driver", "seatbelt"),
+            egress_allowlist=step.egress_allowlist or list(self.defaults.get("egress_allow", []) or []),
             commit_allowlist=step.commit_allowlist or list(self.defaults.get("commit_allowlist", []) or []),
             client=self.client,
             model=step.model or self.model,
@@ -245,6 +251,8 @@ def run_squad_planning(config: PipelineConfig, *, db_path: str | Path | None = N
             client_kwargs={"model": planning.model or config.model} if (planning.model or config.model) else {},
             enable_clawpilot=True,
             max_iters=planning.max_iters,
+            sandbox_driver=planning.sandbox_driver,
+            egress_allowlist=planning.egress_allowlist,
         )
         if agent.transcript:
             agent.transcript.log(
@@ -352,6 +360,8 @@ def _load_step(raw: dict[str, Any]) -> PipelineStep:
         on_ambiguity=raw.get("on_ambiguity"),
         on_commit=raw.get("on_commit"),
         on_taint=raw.get("on_taint"),
+        sandbox_driver=raw.get("sandbox_driver"),
+        egress_allowlist=raw.get("egress_allow"),
         commit_allowlist=list(raw.get("commit_allowlist", []) or []),
         model=raw.get("model"),
         notify=raw.get("notify"),
@@ -379,6 +389,8 @@ def _load_planning(raw: Any) -> SquadPlanningConfig:
         on_ambiguity=raw.get("on_ambiguity", "queue"),
         on_commit=raw.get("on_commit", "refuse"),
         on_taint=raw.get("on_taint", "warn"),
+        sandbox_driver=raw.get("sandbox_driver", "seatbelt"),
+        egress_allowlist=list(raw.get("egress_allow", []) or []),
         commit_allowlist=list(raw.get("commit_allowlist", []) or []),
         model=raw.get("model"),
         required=bool(raw.get("required", True)),

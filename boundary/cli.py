@@ -122,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     overlays_show = overlays_sub.add_parser("show", help="show overlay details")
     overlays_show.add_argument("name_or_path")
 
+    taint_p = sub.add_parser("taint", help="inspect/clear the persisted taint ledger for a workspace")
+    taint_p.add_argument("workspace", help="workspace path")
+    taint_g = taint_p.add_mutually_exclusive_group()
+    taint_g.add_argument("--show", action="store_true", help="print the ledger (default)")
+    taint_g.add_argument("--clear", action="store_true", help="delete the ledger")
+
     run = sub.add_parser("run", help="run an agent on a task")
     run.add_argument("--name", default="agent")
     run.add_argument("--system", help="system prompt string")
@@ -461,6 +467,16 @@ def main(argv: list[str] | None = None) -> int:
         report = ThirdUmpire.grade(args.transcript)
         print(report.markdown())
         return 0 if report.verdict != "FAIL" else 2
+
+    if args.cmd == "taint":
+        from boundary.taint import TaintStore
+        store = TaintStore.load(args.workspace)
+        if args.clear:
+            store.clear()
+            print(f"cleared taint ledger for {args.workspace}")
+        else:
+            print(store.render())
+        return 0
 
     if args.cmd == "selftest":
         from boundary.selftest import run_selftest

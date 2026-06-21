@@ -17,10 +17,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
 from boundary.loop import LoopResult, run_loop
+from boundary.taint import TaintStore
 from boundary.tools.registry import Tool, ToolRegistry
 
 
@@ -121,9 +123,14 @@ class Envelope:
     # Per-tool allowlist. Only checked when on_commit == "allow". Empty list
     # under "allow" means ALL commit tools are allowed (use with caution).
     commit_allowlist: list[str] = field(default_factory=list)
-    # Taint policy (Item 3). When the run has read untrusted external content
-    # (fetch_url / outside-workspace), a subsequent write is a potential exfil
-    # channel. Coarse, run-level taint:
+    # Taint policy (Item 3). A run becomes "tainted" when it handles untrusted
+    # content: a fetch_url (external), a read_file/grep of a file the persisted
+    # ledger marks tainted, or a bash call when egress is not OS-bounded (driver
+    # != srt). A subsequent write/commit to a writable sink is then a potential
+    # exfil channel. Taint is coarse and file-granular (which files, not which
+    # bytes) and persists in a per-workspace ledger (see boundary/taint.py) so it
+    # carries across pipeline stages and separate runs; a write done while tainted
+    # marks its output file tainted too.
     #   "warn"   — record a taint_flow event but allow the write (default).
     #   "refuse" — block the write; tainted content must not reach a writable sink.
     #   "allow"  — disable the check (a downgrade; surfaced by the Third Umpire).
@@ -170,7 +177,7 @@ class Envelope:
 
 @dataclass
 class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow"
+    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow" | "taint_egress"
     tool: str
     detail: str
     iteration: int
@@ -207,6 +214,9 @@ def _make_enforced_tool(
     iter_ref: list[int],
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
+    store=None,                         # TaintStore | None
+    sandbox_driver: str = "seatbelt",
+    egress_allowlist: list[str] | None = None,
 ) -> Tool:
     """Wrap a tool so it consults the envelope before executing."""
     original_fn = base.fn
@@ -241,6 +251,22 @@ def _make_enforced_tool(
                 "committing. Call `stage_proposal` first so write rejection resumes "
                 "from staging instead of restarting research."
             )
+
+        # Provenance taint (C): reading tainted workspace content taints the run.
+        if store is not None:
+            if base.name == "read_file" and store.is_tainted(kwargs.get("path", "")):
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                counters.setdefault("tainted_sources", []).append("taint-file:" + str(kwargs.get("path", ""))[:80])
+            elif base.name == "grep" and store.has_any():
+                # Coarse on purpose: any grep over a workspace that holds a tainted
+                # file taints the run, regardless of the grep's glob. We deliberately
+                # do NOT try to intersect the glob with the tainted set — fnmatch's
+                # glob semantics differ from pathlib's (e.g. "**/*" doesn't match a
+                # top-level file under fnmatch), so a glob-overlap check would
+                # under-taint (the unsafe direction). Over-approximation is the safe
+                # choice for a security gate. read_file above is precise (exact path).
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                counters.setdefault("tainted_sources", []).append("taint-grep:" + str(kwargs.get("glob", "**/*"))[:80])
 
         # 1. Reason check
         if envelope.require_reason and base.kind in ("write", "external", "commit"):
@@ -301,6 +327,8 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["appends_executed"] = counters.get("appends_executed", 0) + 1
+            if store is not None and counters.get("tainted_reads", 0) > 0:
+                store.mark_file(path)
             events.append(EnvelopeEvent("write_allowed", base.name, f"path={path} (append)", i))
             return result
 
@@ -335,6 +363,8 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
+            if store is not None and counters.get("tainted_reads", 0) > 0:
+                store.mark_file(path)
             events.append(EnvelopeEvent("write_allowed", base.name, f"path={path}", i))
             return result
 
@@ -372,6 +402,20 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
+            # D: bash is a tainting SOURCE — it can fetch/exfil when egress is not
+            # OS-bounded. Taint only after it actually executed (a refused bash
+            # pulled nothing); subsequent write/commit/bash sinks then get gated.
+            # Limitation (spec §5): we taint the RUN, not the specific files bash
+            # wrote — we can't parse what a shell command wrote. So files created
+            # by bash are not individually marked in the ledger and a later run
+            # reading them won't be tainted by provenance. Use srt (egress bounded)
+            # for bash you don't want treated as an untrusted source.
+            if sandbox_driver != "srt":
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                _bash_src = "bash:" + cmd_str[:60]
+                counters.setdefault("tainted_sources", []).append(_bash_src)
+                if store is not None:
+                    store.mark_source(_bash_src)
             events.append(EnvelopeEvent("write_allowed", base.name, "bash", i))
             return result
 
@@ -457,9 +501,17 @@ def _make_enforced_tool(
                 return f"ENVELOPE REFUSED: max_external ({envelope.max_external}) reached."
             # Taint labeling (Item 3): external content is untrusted. Mark the run
             # tainted so a later write to a writable sink trips the taint gate.
+            prior_taint = counters.get("tainted_reads", 0) > 0
             counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
             src = kwargs.get("url") or kwargs.get("query") or base.name
             counters.setdefault("tainted_sources", []).append(str(src)[:80])  # type: ignore[arg-type]
+            if store is not None:
+                store.mark_source(str(src)[:80])
+            # nudge: already-tainted run fetching an off-allowlist host = possible exfil
+            if prior_taint and base.name == "fetch_url":
+                host = urlsplit(str(kwargs.get("url", ""))).hostname or ""
+                if host and host not in (egress_allowlist or []):
+                    events.append(EnvelopeEvent("taint_egress", base.name, f"host={host} off-allowlist", i))
 
         # 7. Default path — read tools and unmetered externals
         kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
@@ -604,10 +656,14 @@ class EnvelopeRunner:
     def _enforced_registry(self, halt_flag, events, iter_ref, commit_halt_flag) -> ToolRegistry:
         new_reg = ToolRegistry()
         counters: dict[str, int] = {}
+        store = TaintStore.load(self.agent.workspace.root)
         for name, tool in self.agent.tools._tools.items():
             new_reg.register(_make_enforced_tool(
                 tool, self.envelope, counters, events, iter_ref,
                 halt_flag=halt_flag, commit_halt_flag=commit_halt_flag,
+                store=store,
+                sandbox_driver=self.agent.sandbox_driver,
+                egress_allowlist=self.agent.egress_allowlist,
             ))
         if self.envelope.stop_on_ambiguity:
             new_reg.register(_ask_human_tool(halt_flag, events, iter_ref))
@@ -840,6 +896,8 @@ class EnvelopeRunner:
                 on_commit=self.envelope.on_commit,
                 commit_allowlist=list(self.envelope.commit_allowlist or []),
                 on_taint=self.envelope.on_taint,
+                sandbox_driver=self.agent.sandbox_driver,
+                egress_allowlist=list(self.agent.egress_allowlist or []),
                 tainted_reads=c.get("tainted_reads", 0),
                 staged=bool(c.get("staged", 0)),
                 unstaged_reads=c.get("unstaged_reads", 0),
