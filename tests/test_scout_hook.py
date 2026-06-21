@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from boundary import headless
 from boundary.schedule import ScheduleConfig
@@ -50,7 +51,10 @@ def test_scout_hook_event_written_for_warn(tmp_path, monkeypatch):
     assert event["third_umpire_verdict"] == "WARN"
     assert event["channel"] == "teams_dm"
     summary = event["summary_file"].replace("\\", "/")
-    assert summary.endswith("/scratch/wiki-health-2026-06-16.md")
+    # Date-independent: the summary_file template renders {date} with the current
+    # clock (ScheduleConfig.render_template → datetime.now()), so assert the
+    # date-stamped filename shape rather than a fixed date.
+    assert re.search(r"/scratch/wiki-health-\d{4}-\d{2}-\d{2}\.md$", summary), summary
 
 
 def test_scout_hook_not_written_for_pass_when_warn_fail(tmp_path, monkeypatch):
