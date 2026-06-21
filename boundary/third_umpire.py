@@ -132,6 +132,8 @@ class ThirdUmpire:
             "on_commit": (envelope_end or {}).get("on_commit"),
             "commit_allowlist": (envelope_end or {}).get("commit_allowlist", []),
             "on_taint": (envelope_end or {}).get("on_taint"),
+            "sandbox_driver": (envelope_end or {}).get("sandbox_driver"),
+            "egress_allowlist": (envelope_end or {}).get("egress_allowlist", []),
             "tainted_reads": (envelope_end or {}).get("tainted_reads", 0),
             "writable_paths": (envelope_start or {}).get("writable_paths", []),
             "require_staging": (envelope_start or {}).get("require_staging", False),
@@ -399,6 +401,36 @@ class ThirdUmpire:
                 ),
                 severity="warn",
             ))
+
+        # Check 13b: taint_egress — already-tainted run fetched an off-allowlist host.
+        taint_egress = [e for e in envelope_events if e["kind"] == "taint_egress"]
+        if taint_egress:
+            report.checks.append(CheckResult(
+                "taint_egress",
+                passed=False,
+                detail=(f"{len(taint_egress)} off-allowlist fetch(es) by a tainted run — "
+                        f"possible exfil channel. e.g. {taint_egress[0]['detail'][:120]}. "
+                        f"Egress is contained only under --sandbox-driver srt."),
+                severity="warn",
+            ))
+
+        # Check 15: egress_uncontained — taint handled without OS-bounded egress.
+        # Skip when the driver is unknown (old transcripts) to avoid false fails.
+        sandbox_driver = (envelope_end or {}).get("sandbox_driver")
+        if sandbox_driver is not None:
+            acquired_taint = (
+                report.summary.get("tainted_reads", 0) > 0
+                or any(e["kind"] in ("taint_flow", "taint_egress") for e in envelope_events)
+            )
+            if acquired_taint and sandbox_driver != "srt":
+                report.checks.append(CheckResult(
+                    "egress_uncontained",
+                    passed=False,
+                    detail=(f"run handled untrusted content under sandbox_driver={sandbox_driver!r}, "
+                            f"which does not bound network egress. Exfil via the network is NOT "
+                            f"contained — re-run with --sandbox-driver srt and a tight --egress-allow."),
+                    severity="fail",
+                ))
 
         # Check 14: envelope downgrades — guardrails the operator disabled.
         # A run that turned off a gate must be visibly distinct from one that
