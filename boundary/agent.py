@@ -34,6 +34,8 @@ class Agent:
     ):
         self.name = name
         self.system_prompt = system_prompt
+        self.sandbox_driver = sandbox_driver
+        self.egress_allowlist = list(egress_allowlist or [])
         self.workspace = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
         if isinstance(client, str):
             self.client = make_client(client, **(client_kwargs or {}))
