@@ -880,6 +880,8 @@ class EnvelopeRunner:
                 on_commit=self.envelope.on_commit,
                 commit_allowlist=list(self.envelope.commit_allowlist or []),
                 on_taint=self.envelope.on_taint,
+                sandbox_driver=self.agent.sandbox_driver,
+                egress_allowlist=list(self.agent.egress_allowlist or []),
                 tainted_reads=c.get("tainted_reads", 0),
                 staged=bool(c.get("staged", 0)),
                 unstaged_reads=c.get("unstaged_reads", 0),
