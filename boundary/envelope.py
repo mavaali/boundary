@@ -17,10 +17,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
 from boundary.loop import LoopResult, run_loop
+from boundary.taint import TaintStore
 from boundary.tools.registry import Tool, ToolRegistry
 
 
@@ -170,7 +172,7 @@ class Envelope:
 
 @dataclass
 class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow"
+    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow" | "taint_egress"
     tool: str
     detail: str
     iteration: int
@@ -207,6 +209,9 @@ def _make_enforced_tool(
     iter_ref: list[int],
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
+    store=None,                         # TaintStore | None
+    sandbox_driver: str = "seatbelt",
+    egress_allowlist: list[str] | None = None,
 ) -> Tool:
     """Wrap a tool so it consults the envelope before executing."""
     original_fn = base.fn
@@ -230,6 +235,15 @@ def _make_enforced_tool(
                     "next read must test or revise the staged answer."
                 )
 
+        # D: bash can fetch/exfil; record taint before staging gate so attempted
+        # bash calls are tracked even when staging blocks execution.
+        if base.name == "bash" and envelope.allow_bash and sandbox_driver != "srt":
+            counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+            _bash_src = "bash:" + (kwargs.get("command", "") if isinstance(kwargs.get("command"), str) else "")[:60]
+            counters.setdefault("tainted_sources", []).append(_bash_src)
+            if store is not None:
+                store.mark_source(_bash_src)
+
         if (
             staging_required
             and counters.get("staged", 0) == 0
@@ -241,6 +255,16 @@ def _make_enforced_tool(
                 "committing. Call `stage_proposal` first so write rejection resumes "
                 "from staging instead of restarting research."
             )
+
+        # Provenance taint (C): reading tainted workspace content taints the run.
+        if store is not None:
+            if base.name == "read_file" and store.is_tainted(kwargs.get("path", "")):
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                counters.setdefault("tainted_sources", []).append("taint-file:" + str(kwargs.get("path", ""))[:80])
+            elif base.name == "grep" and store.has_any():
+                # coarse: a grep over a workspace that holds any tainted file taints the run
+                counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
+                counters.setdefault("tainted_sources", []).append("taint-grep:" + str(kwargs.get("glob", "**/*"))[:80])
 
         # 1. Reason check
         if envelope.require_reason and base.kind in ("write", "external", "commit"):
@@ -301,6 +325,8 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["appends_executed"] = counters.get("appends_executed", 0) + 1
+            if store is not None and counters.get("tainted_reads", 0) > 0:
+                store.mark_file(path)
             events.append(EnvelopeEvent("write_allowed", base.name, f"path={path} (append)", i))
             return result
 
@@ -335,6 +361,8 @@ def _make_enforced_tool(
                 events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
                 return result
             counters["writes_executed"] = counters.get("writes_executed", 0) + 1
+            if store is not None and counters.get("tainted_reads", 0) > 0:
+                store.mark_file(path)
             events.append(EnvelopeEvent("write_allowed", base.name, f"path={path}", i))
             return result
 
@@ -457,9 +485,17 @@ def _make_enforced_tool(
                 return f"ENVELOPE REFUSED: max_external ({envelope.max_external}) reached."
             # Taint labeling (Item 3): external content is untrusted. Mark the run
             # tainted so a later write to a writable sink trips the taint gate.
+            prior_taint = counters.get("tainted_reads", 0) > 0
             counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
             src = kwargs.get("url") or kwargs.get("query") or base.name
             counters.setdefault("tainted_sources", []).append(str(src)[:80])  # type: ignore[arg-type]
+            if store is not None:
+                store.mark_source(str(src)[:80])
+            # nudge: already-tainted run fetching an off-allowlist host = possible exfil
+            if prior_taint and base.name == "fetch_url":
+                host = urlsplit(str(kwargs.get("url", ""))).hostname or ""
+                if host and host not in (egress_allowlist or []):
+                    events.append(EnvelopeEvent("taint_egress", base.name, f"host={host} off-allowlist", i))
 
         # 7. Default path — read tools and unmetered externals
         kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
@@ -604,10 +640,14 @@ class EnvelopeRunner:
     def _enforced_registry(self, halt_flag, events, iter_ref, commit_halt_flag) -> ToolRegistry:
         new_reg = ToolRegistry()
         counters: dict[str, int] = {}
+        store = TaintStore.load(self.agent.workspace.root)
         for name, tool in self.agent.tools._tools.items():
             new_reg.register(_make_enforced_tool(
                 tool, self.envelope, counters, events, iter_ref,
                 halt_flag=halt_flag, commit_halt_flag=commit_halt_flag,
+                store=store,
+                sandbox_driver=self.agent.sandbox_driver,
+                egress_allowlist=self.agent.egress_allowlist,
             ))
         if self.envelope.stop_on_ambiguity:
             new_reg.register(_ask_human_tool(halt_flag, events, iter_ref))
