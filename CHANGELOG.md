@@ -8,6 +8,60 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-20
+
+The taint milestone — the write-as-exfil channel is now bounded across **stage and
+run boundaries**, and missing OS egress containment is a loud failure. This is the
+major step toward the 1.0 goal of closing the lethal trifecta: taint is now coarse,
+**file-granular, and persisted**. Per-value information-flow tracking remains future
+work, so this is progress toward 1.0, not 1.0 itself.
+
+### Added
+- **Persisted, file-granular taint ledger** (`boundary/taint.py`) — `TaintStore`
+  records untrusted sources and tainted files per workspace under
+  `$BOUNDARY_HOME/taint/<hash>.json` (default `~/.boundary`), **outside** the
+  workspace so a jailed agent (and the `HOME`-repointed sandboxed bash) cannot read
+  or clear it. Taint now survives pipeline-stage and separate-invocation boundaries.
+- **Provenance taint** — a run becomes tainted not only by `fetch_url` but by
+  `read_file`/`grep` of a file the ledger marks tainted, and by `bash` when egress
+  is not OS-bounded (`--sandbox-driver` ≠ `srt`). A write executed while the run is
+  tainted marks its output file tainted (cross-stage propagation). Taint is causal:
+  a run that reads only untainted files is never gated, even if the workspace holds
+  tainted files elsewhere.
+- **`egress_uncontained` check** (Third Umpire, **fail**) — a run that handled
+  untrusted content under a non-`srt` driver can no longer report green, because
+  network exfil is not contained without an OS egress allowlist.
+- **`taint_egress` check** (Third Umpire, **warn**) — an already-tainted run that
+  fetches a host outside the egress allowlist is flagged as a possible exfil channel.
+- **`boundary taint --show/--clear <workspace>`** — inspect or reset the (monotonic)
+  ledger for a workspace.
+- **Sandbox driver / egress in scheduled and pipeline runs** — `sandbox_driver:` and
+  `egress_allow:` are now honored in schedule YAML, pipeline steps, and squad
+  planning (previously hard-pinned to `seatbelt`). The `Agent` is the single source
+  of truth, and both are logged in `envelope_end` for the Third Umpire.
+- **Tests** — cross-stage and cross-invocation taint locks (`tests/redteam/test_taint_cross_stage.py`),
+  provenance/propagation, bash-taint-unless-`srt`, tainted commit-path refusal, and
+  the new umpire checks.
+
+### Changed
+- **The taint gate spans runs.** Previously taint was per-run and reset at every
+  stage/process boundary, so the stage that committed was blind to what an earlier
+  stage fetched. It now carries via the persisted ledger.
+- **`on_taint=refuse` semantics** — a write is blocked in any run that *became*
+  tainted (via fetch, tainted-file read, or non-`srt` bash), across stages — not
+  only within the run that did the fetch.
+- README, GUIDE, and the envelope docstring rewritten to describe the file-granular
+  persisted model and its honest limits (file- not byte-granular; `bash` outputs not
+  individually attributed; network exfil closed only by `srt`).
+
+### Upgrade note
+Runs that handle untrusted content under the default `seatbelt` driver will now get
+a Third Umpire `egress_uncontained` **fail** — this surfaces a real gap, not a
+regression. It does **not** block anything under the default `on_taint=warn`, but it
+will turn affected runs' verdicts red until they move to `--sandbox-driver srt` with
+a tight `--egress-allow`. Transcripts from older versions (no driver logged) are
+exempt — the check is skipped.
+
 ## [0.5.0] - 2026-06-16
 
 The cross-platform-scheduling milestone: headless schedules and pipelines now
