@@ -258,7 +258,13 @@ def _make_enforced_tool(
                 counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
                 counters.setdefault("tainted_sources", []).append("taint-file:" + str(kwargs.get("path", ""))[:80])
             elif base.name == "grep" and store.has_any():
-                # coarse: a grep over a workspace that holds any tainted file taints the run
+                # Coarse on purpose: any grep over a workspace that holds a tainted
+                # file taints the run, regardless of the grep's glob. We deliberately
+                # do NOT try to intersect the glob with the tainted set — fnmatch's
+                # glob semantics differ from pathlib's (e.g. "**/*" doesn't match a
+                # top-level file under fnmatch), so a glob-overlap check would
+                # under-taint (the unsafe direction). Over-approximation is the safe
+                # choice for a security gate. read_file above is precise (exact path).
                 counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
                 counters.setdefault("tainted_sources", []).append("taint-grep:" + str(kwargs.get("glob", "**/*"))[:80])
 
@@ -399,6 +405,11 @@ def _make_enforced_tool(
             # D: bash is a tainting SOURCE — it can fetch/exfil when egress is not
             # OS-bounded. Taint only after it actually executed (a refused bash
             # pulled nothing); subsequent write/commit/bash sinks then get gated.
+            # Limitation (spec §5): we taint the RUN, not the specific files bash
+            # wrote — we can't parse what a shell command wrote. So files created
+            # by bash are not individually marked in the ledger and a later run
+            # reading them won't be tainted by provenance. Use srt (egress bounded)
+            # for bash you don't want treated as an untrusted source.
             if sandbox_driver != "srt":
                 counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
                 _bash_src = "bash:" + cmd_str[:60]

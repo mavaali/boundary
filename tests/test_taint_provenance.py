@@ -96,6 +96,40 @@ def test_bash_taints_unless_srt(tmp_path, monkeypatch):
     assert counters.get("tainted_reads", 0) >= 1
 
 
+def test_tainted_commit_refused_under_on_taint_refuse(tmp_path, monkeypatch):
+    # Spec acceptance #1 commit-path: a tainted run hitting a kind="commit" tool
+    # under on_taint=refuse must be blocked before the commit executes, even when
+    # on_commit=allow would otherwise permit it.
+    monkeypatch.setenv("BOUNDARY_HOME", str(tmp_path / "bh"))
+    env = Envelope(writable_paths=["out.md"], on_taint="refuse",
+                   on_commit="allow", commit_allowlist=["do_commit"])
+    env.require_staging = False
+    ws = Workspace(root=tmp_path)
+    base = ToolRegistry()
+    register_fs_tools(base, ws)
+    base.register(_fetch_tool())
+    fired = []
+
+    def do_commit(reason: str = "") -> str:
+        fired.append(1)
+        return "committed"
+
+    base.register(Tool(name="do_commit", description="x",
+                       parameters={"type": "object",
+                                   "properties": {"reason": {"type": "string"}},
+                                   "required": ["reason"]},
+                       fn=do_commit, kind="commit"))
+    counters, events, iter_ref = {}, [], [1]
+    enforced = ToolRegistry()
+    for tool in base._tools.values():
+        enforced.register(_make_enforced_tool(
+            tool, env, counters, events, iter_ref, store=TaintStore.load(tmp_path)))
+    enforced.get("fetch_url").call({"url": "http://evil.test", "reason": "r"})
+    r = enforced.get("do_commit").call({"reason": "ship it"})
+    assert "ENVELOPE REFUSED" in r and "taint" in r.lower(), r
+    assert fired == []  # the commit side effect never ran
+
+
 def test_taint_egress_nudge_when_tainted_and_offlist(tmp_path, monkeypatch):
     monkeypatch.setenv("BOUNDARY_HOME", str(tmp_path / "bh"))
     env = Envelope(writable_paths=["out.md"], on_taint="warn")
