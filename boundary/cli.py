@@ -7,6 +7,23 @@ from boundary.agent import Agent
 from boundary.overlay import Overlay
 
 
+def _print_best_of_k(bres, k: int) -> None:
+    """Render a best-of-K result summary for the CLI (shared by run + fielding-coach)."""
+    print(f"\n=== best-of-{k} ===")
+    for c in bres.candidates:
+        print(f"  run{c.k}: {c.verdict:4}  ${getattr(c.result, 'estimated_dollars', 0.0):.4f}  -> {list(c.run_paths)}")
+    if bres.judge:
+        print(f"  judge: margin={bres.judge.margin:.2f} abstain={bres.judge.abstain} ranking={bres.judge.ranking}")
+    wk = bres.winner.k if bres.winner else None
+    print(f"  winner: run{wk}  escalation={bres.escalation}")
+    if bres.promoted:
+        print(f"  promoted: {bres.promoted}")
+    else:
+        print("  promoted: none" + (f" — queued for review #{bres.review_id}" if bres.review_id else ""))
+    if bres.review_id:
+        print(f"  review: #{bres.review_id} ({bres.escalation}) — boundary review-queue list")
+
+
 def _prompt_commit_policy(agent, on_commit_flag: str | None, commit_allow_flag: list[str]) -> tuple[str, list[str]]:
     """Decide the commit policy for an interactive run.
 
@@ -64,6 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     fc.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default=None)
     fc.add_argument("--commit-allow", action="append", default=[])
     fc.add_argument("--verbose", "-v", action="store_true")
+    # Best-of-K (feature C) passthrough for Fielding Coach dispatch.
+    fc.add_argument("--runs", type=int, default=1,
+                    help="best-of-K: dispatch the proposal K times and select a winner. K=1 (default) disables.")
+    fc.add_argument("--mode", choices=["interactive", "headless"], default="interactive",
+                    help="best-of-K selection mode (interactive blocks on close calls; headless never blocks)")
+    fc.add_argument("--select-margin", type=float, default=0.15,
+                    help="best-of-K: judge score margin below which a selection is a close call")
+    fc.add_argument("--judge-model", default=None, help="best-of-K: model for the selection judge")
+    fc.add_argument("--headless-fallback", choices=["auto_pick_flag", "defer"], default="auto_pick_flag",
+                    help="best-of-K headless close-call behavior")
 
     # Phase 3: schedules
     sched_inst = sub.add_parser("schedule", help="install/uninstall/list scheduled headless runs (OS scheduler)")
@@ -175,6 +202,20 @@ def main(argv: list[str] | None = None) -> int:
                      help="under --on-commit=allow, name a specific commit tool to permit "
                           "(repeat for multiple). Empty list means all commit tools.")
     run.add_argument("--verbose", "-v", action="store_true")
+    # Best-of-K (feature C): run the task K times and select a winner.
+    run.add_argument("--runs", type=int, default=1,
+                     help="best-of-K: run the task K times into per-run paths and select a winner "
+                          "(requires --envelope-writable). K=1 (default) disables.")
+    run.add_argument("--mode", choices=["interactive", "headless"], default="interactive",
+                     help="best-of-K selection mode: interactive blocks on close calls (review-queue), "
+                          "headless never blocks")
+    run.add_argument("--select-margin", type=float, default=0.15,
+                     help="best-of-K: judge score margin below which a selection is a close call")
+    run.add_argument("--judge-model", default=None,
+                     help="best-of-K: model for the selection judge (defaults to --model)")
+    run.add_argument("--headless-fallback", choices=["auto_pick_flag", "defer"], default="auto_pick_flag",
+                     help="best-of-K headless close-call behavior: auto_pick_flag promotes the top pick "
+                          "and files a non-blocking advisory; defer promotes nothing")
 
     args = p.parse_args(argv)
 
@@ -218,6 +259,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{role_label}] cancelled (re-run with a tightened prompt to revise).")
                 return 1
         print(f"\n[{role_label}] dispatching (on_commit={on_commit})...\n")
+        if args.runs and args.runs > 1:
+            if not proposal.writable_paths:
+                print("ERROR: --runs requires the proposal to declare writable_paths")
+                return 2
+            from boundary.fielding_coach import dispatch_best_of_k
+            bres = dispatch_best_of_k(
+                proposal, workspace=workspace, client=args.client, model=args.model,
+                verbose=args.verbose, on_commit=on_commit, commit_allowlist=commit_allowlist,
+                runs=args.runs, mode=args.mode, select_margin=args.select_margin,
+                judge_model=args.judge_model, headless_fallback=args.headless_fallback,
+            )
+            _print_best_of_k(bres, args.runs)
+            return 0
         result = dispatch(
             proposal, workspace=workspace, client=args.client, model=args.model,
             verbose=args.verbose, on_commit=on_commit, commit_allowlist=commit_allowlist,
@@ -533,24 +587,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.role and not overlay:
             print("ERROR: --role requires --overlay")
             return 2
-        if persona_path:
-            from boundary.adapters.clawpilot import load_persona
-            agent = load_persona(
-                charter=persona_path,
-                workspace=workspace,
-                name=args.role or (args.name if args.name != "agent" else None),
-                client=args.client,
-                model=args.model,
-                enable_fs=not args.no_fs,
-                enable_shell=not args.no_shell,
-                enable_web=args.web,
-                enable_clawpilot=enable_clawpilot,
-                extra_system=extra_system,
-                max_iters=args.max_iters,
-                sandbox_driver=args.sandbox_driver,
-                egress_allowlist=args.egress_allow,
-            )
-        else:
+
+        def make_agent():
+            if persona_path:
+                from boundary.adapters.clawpilot import load_persona
+                return load_persona(
+                    charter=persona_path,
+                    workspace=workspace,
+                    name=args.role or (args.name if args.name != "agent" else None),
+                    client=args.client,
+                    model=args.model,
+                    enable_fs=not args.no_fs,
+                    enable_shell=not args.no_shell,
+                    enable_web=args.web,
+                    enable_clawpilot=enable_clawpilot,
+                    extra_system=extra_system,
+                    max_iters=args.max_iters,
+                    sandbox_driver=args.sandbox_driver,
+                    egress_allowlist=args.egress_allow,
+                )
             if args.system_file:
                 system_prompt = Path(args.system_file).expanduser().read_text(encoding="utf-8")
             elif args.system:
@@ -560,7 +615,7 @@ def main(argv: list[str] | None = None) -> int:
             if extra_system:
                 system_prompt += "\n\n" + extra_system
             client_kwargs = {"model": args.model} if args.model else {}
-            agent = Agent(
+            return Agent(
                 name=args.name,
                 system_prompt=system_prompt,
                 workspace=workspace,
@@ -574,6 +629,66 @@ def main(argv: list[str] | None = None) -> int:
                 sandbox_driver=args.sandbox_driver,
                 egress_allowlist=args.egress_allow,
             )
+
+        # Best-of-K branch (feature C): fan out K runs and select a winner.
+        if args.runs and args.runs > 1:
+            if not args.envelope_writable:
+                print("ERROR: --runs K requires --envelope-writable (best-of-K templates and promotes a path)")
+                return 2
+            from boundary.envelope import Envelope
+            from boundary.multirun import run_best_of_k
+            from boundary.clients import make_client
+            from boundary.transcript import Transcript
+            from boundary.history import History
+            probe = make_agent()
+            on_commit, commit_allowlist = _prompt_commit_policy(probe, args.on_commit, args.commit_allow)
+            probe.close()
+            base_env = Envelope(
+                writable_paths=args.envelope_writable,
+                max_writes=args.envelope_max_writes,
+                min_writes=args.envelope_min_writes,
+                max_appends=args.envelope_max_appends,
+                max_external=args.envelope_max_external,
+                require_staging=not args.no_staging_gate,
+                max_unstaged_reads=args.envelope_max_unstaged_reads,
+                max_input_tokens=args.envelope_max_input_tokens,
+                max_output_tokens=args.envelope_max_output_tokens,
+                max_dollars=args.envelope_max_dollars,
+                max_wall_seconds=args.envelope_max_wall_seconds,
+                on_commit=on_commit,
+                commit_allowlist=commit_allowlist,
+                on_taint=args.on_taint,
+            )
+            k = args.runs
+
+            def factory(run_index):
+                a = make_agent()
+                if a.transcript:
+                    a.transcript.close()
+                a.transcript = Transcript(agent_name=f"{args.role or args.name}-run{run_index}")
+                return a
+
+            def temp_for(run_index):
+                if k <= 1:
+                    return {}
+                return {"temperature": round(0.2 + 0.4 * (run_index - 1) / (k - 1), 3)}
+
+            judge_client = make_client(args.client, model=(args.judge_model or args.model)) \
+                if (args.judge_model or args.model or args.client) else None
+            hist = History()
+            try:
+                bres = run_best_of_k(
+                    agent_factory=factory, base_envelope=base_env, task=args.task,
+                    workspace_root=Path(workspace).expanduser(), k=k, chat_kwargs_for=temp_for,
+                    judge_client=judge_client, mode=args.mode, select_margin=args.select_margin,
+                    headless_fallback=args.headless_fallback, history=hist, verbose=args.verbose,
+                )
+            finally:
+                hist.close()
+            _print_best_of_k(bres, k)
+            return 0
+
+        agent = make_agent()
         try:
             if args.envelope_writable:
                 from boundary.envelope import Envelope, EnvelopeRunner

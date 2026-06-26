@@ -687,6 +687,8 @@ tainted run under a non-`srt` driver also gets an `egress_uncontained` **fail**.
 | `max_writes` | 10 | `--envelope-max-writes N` |
 | `min_writes` | 1 | `--envelope-min-writes N` |
 | `max_external` | 20 | `--envelope-max-external N` |
+| `repeat_warn` / `repeat_halt` | 3 / 5 | envelope fields (`repeat_halt=0` disables) |
+| `nudge_on_early_stop` | True | envelope field |
 
 ### What things actually cost (Sonnet 4.5)
 
@@ -703,6 +705,93 @@ boundary run ... --envelope-max-dollars 0.25
 ```
 
 Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact spend.
+
+### No-progress detection & early-stop nudge
+
+Two cheap loop bounds (from the ComPilot study cited below):
+
+- **Repeated-action halt.** Identical tool calls (name + canonical args) repeated
+  `repeat_warn` times warn the agent in-band; at `repeat_halt` the run halts with
+  `stop_reason: no_progress_halt`. Stops an agent burning budget circling a local
+  optimum. Set `repeat_halt=0` to disable.
+- **Early-stop nudge.** If the agent stops before `min_writes` is met and iters
+  remain, it gets exactly one nudge to finish or call `ask_human`. It does NOT
+  fire once `min_writes` is satisfied — Boundary is bounded, not maximal, so a
+  satisfied run is never pushed to "explore more." Both emit events
+  (`no_progress`, `early_stop_nudge`) visible to the Third Umpire and `history`.
+
+### Typed feedback & pre-exec validity gate
+
+- **Typed tool-result feedback (A).** Every tool result is classified into one of
+  four categories — `success` / `arg-invalid` / `policy-refused` / `runtime-error`
+  — surfaced in-band on the `[ENVELOPE: … | result <class>]` banner and tallied as
+  `results_by_class` at `envelope_end`. Gives the agent a labeled self-correction
+  signal (ComPilot RQ3) instead of an opaque string, and gives the grader a
+  run's execution-quality profile.
+- **Pre-exec validity gate (B).** A malformed call (a schema-required field
+  missing) is rejected with a typed `arg-invalid` message BEFORE the
+  possibly-expensive tool executes — no subprocess, no side effect, no wasted
+  iteration (ComPilot's cheap two-stage filter). `reason` is excluded; it stays a
+  policy concern (`require_reason` → `policy-refused`).
+
+### Doctrine: concise commands & feedback over context
+
+Grounding for the efficiency rules baked into the envelope note and Fielding
+Coach, from *Agentic Auto-Scheduling: An Experimental Study of LLM-Guided Loop
+Optimization* (Merouani et al., PACT 2025, arXiv:2511.00592):
+
+- **Concise commands beat full artifacts.** Having the agent emit a full rewrite
+  instead of targeted commands cost ~5.3× the tokens AND produced worse results
+  (RQ7). The envelope note tells agents to revise with `edit_file` diffs, not
+  whole-file re-dumps; the Fielding Coach prefers edit-based task framing.
+- **Feedback dominates static context.** Injecting extra static context (hardware
+  details) made no significant difference — the iterative tool-feedback loop
+  overwhelmed it (RQ8). Grounded tool results, not fat priming, drive the outcome
+  (RQ6: feedback beat no-feedback by 23-40%, widening with iterations). Spend the
+  budget on the loop, not the preamble.
+
+---
+
+## Best-of-K (multi-run selection)
+
+`boundary run --runs K ...` runs the same task K times into per-run paths, grades
+each with the Third Umpire, and selects a winner. Opt-in; `K=1` (default) is the
+normal single dispatch. Requires `--envelope-writable` — the path is templated per
+run (`out.md` → `out-run1.md`, …) and the winner is promoted back to it.
+
+Pipeline:
+
+1. **Fan-out** — K independent `EnvelopeRunner` dispatches, each writing to its own
+   per-run path (no clobber), with per-run temperature variance.
+2. **Third Umpire gate** — runs the grader FAILs are dropped from the pool.
+3. **Bounded judge** — a read-only judge (no fs/shell tools — it *cannot* write)
+   ranks survivors against a rubric, scores each 0–1, emits a margin between the
+   top two, and may abstain.
+4. **Mode-aware resolution** (never blocks headless):
+
+   | | clear margin | close / abstain |
+   |---|---|---|
+   | `--mode interactive` | promote winner | block → review-queue (RATIFY) |
+   | `--mode headless` | promote winner | auto-pick + non-blocking advisory (or `--headless-fallback defer`) |
+
+   `--select-margin` (default 0.15) is the close-call threshold. If every run FAILs
+   the gate, the close-call path is forced regardless of margin.
+
+Flags: `--runs K`, `--mode {interactive,headless}`, `--select-margin`,
+`--judge-model`, `--headless-fallback {auto_pick_flag,defer}`.
+
+**Surfaces.** Best-of-K is available three ways: `boundary run --runs K`,
+`boundary fielding-coach --runs K` (dispatches the proposal K times), and a
+scheduled YAML with `runs: K` (headless — scheduled fan-out never blocks; close
+calls auto-pick + file a non-blocking advisory, or `headless_fallback: defer`).
+Schedule keys: `runs`, `select_margin`, `judge_model`, `headless_fallback`.
+
+Design notes: single model + temperature variance is the v1 diversity source
+(faithful to the ComPilot study); cross-model fan-out and git-worktree isolation
+for multi-file deliverables are documented upgrades. The judge is a trust-bounded
+step — it ranks but never writes, and on close calls the human keeps the verdict
+(interactive) or an override flag (headless). Overnight headless runs always
+finish.
 
 ---
 
