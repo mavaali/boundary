@@ -117,7 +117,9 @@ def scan_fabricspecs_questions(
     ws = Path(workspace).expanduser()
     out: list[DiscoveredTask] = []
     for f in ws.rglob("*.md"):
-        if _EXCL.search("/" + str(f)):
+        # Normalize to POSIX separators so the exclusion regex matches on Windows
+        # (where rglob yields backslash paths) as well as POSIX systems.
+        if _EXCL.search("/" + f.as_posix()):
             continue
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
@@ -133,14 +135,14 @@ def scan_fabricspecs_questions(
         block = _open_questions_block(text)
         if not block:
             continue
-        rel = f.relative_to(ws)
+        rel = f.relative_to(ws).as_posix()
         for q in _extract_open(block, max_per_spec=max_per_spec):
             out.append(DiscoveredTask(
                 source="fabricspecs_questions",
                 title=f"[{f.stem}] {q[:90]}",
                 detail=f"Open question in spec `{rel}` (owner: {owner}):\n\n> {q}\n\n"
                        f"Investigate and propose a resolution. Cite sources.",
-                origin=str(rel),
+                origin=rel,
             ))
             if len(out) >= max_tasks:
                 return out
