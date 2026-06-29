@@ -271,34 +271,90 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             commit_allowlist=list(config.commit_allowlist or []),
             on_taint=config.on_taint,
         )
-        runner = EnvelopeRunner(agent, env)
-        result = runner.run(rendered_task, verbose=verbose)
+        if config.runs and config.runs > 1:
+            # Best-of-K, headless: fan out K runs, never block on close calls.
+            from boundary.multirun import run_best_of_k
+            from boundary.clients import make_client
+            from boundary.transcript import Transcript as _Transcript
+            agent.close()  # discard the single pre-built agent; the factory builds its own
 
-        stop_reason = result.loop_result.stop_reason
-        iterations = result.loop_result.iterations
-        writes_executed = result.writes_executed
-        input_tokens = result.input_tokens
-        output_tokens = result.output_tokens
-        cached_input_tokens = result.cached_input_tokens
-        estimated_dollars = result.estimated_dollars
-        wall_seconds = result.wall_seconds
-        transcript_path = str(agent.transcript.path) if agent.transcript else None
+            def _factory(run_index):
+                a = load_persona(
+                    charter=charter, workspace=workspace, client=config.client,
+                    model=config.model, enable_clawpilot=True, max_iters=config.max_iters,
+                    extra_system=extra_system, sandbox_driver=config.sandbox_driver,
+                    egress_allowlist=config.egress_allowlist,
+                )
+                if a.transcript:
+                    a.transcript.close()
+                a.transcript = _Transcript(agent_name=f"{config.persona}-run{run_index}")
+                a.transcript.log("charter_version", schedule_name=config.name, persona=config.persona,
+                                 charter_path=str(charter), charter_sha=charter_sha,
+                                 charter_bytes=len(charter_bytes))
+                return a
 
-        for rp in rendered_paths:
-            full = workspace / rp
-            if full.exists():
-                written_files.append(str(full))
+            k = config.runs
 
-        if transcript_path:
-            try:
-                report = ThirdUmpire.grade(transcript_path)
-                third_umpire_verdict = report.verdict
-                third_umpire_summary = report.summary
-            except Exception as e:
-                third_umpire_verdict = "ERROR"
-                third_umpire_summary = {"error": str(e)}
+            def _temp_for(r):
+                if k <= 1:
+                    return {}
+                return {"temperature": round(0.2 + 0.4 * (r - 1) / (k - 1), 3)}
 
-        agent.close()
+            judge_client = make_client(config.client, model=(config.judge_model or config.model))
+            bres = run_best_of_k(
+                agent_factory=_factory, base_envelope=env, task=rendered_task,
+                workspace_root=workspace, k=k, chat_kwargs_for=_temp_for,
+                judge_client=judge_client, mode="headless",
+                select_margin=config.select_margin, headless_fallback=config.headless_fallback,
+                history=history, verbose=verbose,
+            )
+            win = bres.winner
+            wres = win.result if win else None
+            stop_reason = f"best_of_k:{bres.escalation}"
+            iterations = getattr(wres.loop_result, "iterations", 0) if wres else 0
+            writes_executed = getattr(wres, "writes_executed", 0) if wres else 0
+            input_tokens = sum(getattr(c.result, "input_tokens", 0) for c in bres.candidates)
+            output_tokens = sum(getattr(c.result, "output_tokens", 0) for c in bres.candidates)
+            cached_input_tokens = sum(getattr(c.result, "cached_input_tokens", 0) for c in bres.candidates)
+            estimated_dollars = sum(getattr(c.result, "estimated_dollars", 0.0) for c in bres.candidates)
+            wall_seconds = sum(getattr(c.result, "wall_seconds", 0.0) for c in bres.candidates)
+            transcript_path = (win.transcript_path if win
+                               else (bres.candidates[0].transcript_path if bres.candidates else None))
+            for fp in bres.promoted:
+                full = workspace / fp
+                if full.exists():
+                    written_files.append(str(full))
+            third_umpire_verdict = win.verdict if win else "FAIL"
+            third_umpire_summary = bres.summary()
+        else:
+            runner = EnvelopeRunner(agent, env)
+            result = runner.run(rendered_task, verbose=verbose)
+
+            stop_reason = result.loop_result.stop_reason
+            iterations = result.loop_result.iterations
+            writes_executed = result.writes_executed
+            input_tokens = result.input_tokens
+            output_tokens = result.output_tokens
+            cached_input_tokens = result.cached_input_tokens
+            estimated_dollars = result.estimated_dollars
+            wall_seconds = result.wall_seconds
+            transcript_path = str(agent.transcript.path) if agent.transcript else None
+
+            for rp in rendered_paths:
+                full = workspace / rp
+                if full.exists():
+                    written_files.append(str(full))
+
+            if transcript_path:
+                try:
+                    report = ThirdUmpire.grade(transcript_path)
+                    third_umpire_verdict = report.verdict
+                    third_umpire_summary = report.summary
+                except Exception as e:
+                    third_umpire_verdict = "ERROR"
+                    third_umpire_summary = {"error": str(e)}
+
+            agent.close()
     except Exception as e:
         error_text = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 

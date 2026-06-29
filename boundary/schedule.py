@@ -47,6 +47,13 @@ class ScheduleConfig:
     model: str | None = None
     notify: Any = "digest_daily"        # informational, or a notify config block
     enabled: bool = True
+    # Best-of-K (feature C). runs>1 fans the task out K times and selects a winner.
+    # Scheduled runs are headless: close calls never block — they auto-pick the top
+    # and file a non-blocking advisory (or defer), per headless_fallback.
+    runs: int = 1
+    select_margin: float = 0.15
+    judge_model: str | None = None
+    headless_fallback: str = "auto_pick_flag"
 
     @classmethod
     def load(cls, path: str | Path) -> "ScheduleConfig":
@@ -79,6 +86,10 @@ class ScheduleConfig:
             model=data.get("model"),
             notify=data.get("notify", "digest_daily"),
             enabled=bool(data.get("enabled", True)),
+            runs=int(data.get("runs", 1)),
+            select_margin=float(data.get("select_margin", 0.15)),
+            judge_model=data.get("judge_model"),
+            headless_fallback=data.get("headless_fallback", "auto_pick_flag"),
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:

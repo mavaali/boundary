@@ -8,6 +8,37 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-25
+
+ComPilot incorporation — lessons from *Agentic Auto-Scheduling: An Experimental
+Study of LLM-Guided Loop Optimization* (Merouani et al., PACT 2025,
+arXiv:2511.00592) ported into the envelope/loop.
+
+### Added
+- **Best-of-K multi-run selection** (`boundary/multirun.py`, `boundary run --runs K`)
+  — fan out K runs into per-run templated paths, Third-Umpire-gate, a bounded
+  read-only judge ranks survivors, and a mode-aware **non-blocking-for-headless**
+  resolution promotes the winner (interactive blocks on close calls via the
+  review-queue; headless auto-picks + files a non-blocking advisory, or defers).
+  Surfaced via `run --runs K`, `fielding-coach --runs K`, and scheduled YAML
+  (`runs:` + `select_margin` / `judge_model` / `headless_fallback`).
+- **Typed tool-result feedback** — every tool result is classified
+  `success` / `arg-invalid` / `policy-refused` / `runtime-error`, surfaced on the
+  envelope banner and tallied as `results_by_class` on `EnvelopeRunResult`.
+- **Pre-exec validity gate** — a call missing a schema-required field is rejected
+  as `arg-invalid` before the (expensive/side-effecting) tool runs; no side
+  effect, no wasted iteration. `reason` stays a policy concern.
+- **No-progress halt & early-stop nudge** — identical tool calls repeated past
+  `repeat_halt` halt the run (`stop_reason: no_progress_halt`); a premature stop
+  under `min_writes` triggers exactly one bounded continue nudge.
+- Efficiency doctrine baked into the envelope note + Fielding Coach (revise with
+  `edit_file` diffs not whole-file rewrites; spend on feedback, not fat priming).
+
+### Changed
+- `Envelope` gains `repeat_warn` / `repeat_halt` / `nudge_on_early_stop` knobs;
+  `EnvelopeRunResult` and the `envelope_end` transcript record gain
+  `results_by_class`.
+
 ## [0.6.0] - 2026-06-20
 
 The taint milestone — the write-as-exfil channel is now bounded across **stage and

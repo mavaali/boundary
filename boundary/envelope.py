@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,19 @@ class Envelope:
     allow_bash: bool = True
     stop_on_ambiguity: bool = True
     budget_pressure_at: tuple[float, ...] = (0.6, 0.8)
+    # No-progress / repeated-action detection (D). When the agent issues the same
+    # tool call (name + canonical args) repeatedly it is stuck and burning budget
+    # on unproductive exchanges (the ComPilot local-optima behavior). After
+    # `repeat_warn` identical calls the agent is warned in-band; after
+    # `repeat_halt` the run halts (stop_reason "no_progress_halt"). Set
+    # repeat_halt=0 to disable.
+    repeat_warn: int = 3
+    repeat_halt: int = 5
+    # One-shot early-stop nudge (D). If the agent stops (emits no tool calls)
+    # before min_writes is met and iters remain, nudge ONCE to continue or to call
+    # ask_human. Bounded; does NOT fire once min_writes is satisfied — Boundary is
+    # bounded, not maximal, so we never push a satisfied run to "explore more".
+    nudge_on_early_stop: bool = True
     # Staging pivot: agents get a small orientation window, then must commit to
     # a provisional thesis/hypothesis/evidence plan before deep reads or writes.
     require_staging: bool = True
@@ -177,7 +191,7 @@ class Envelope:
 
 @dataclass
 class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow" | "taint_egress"
+    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow" | "taint_egress" | "no_progress" | "early_stop_nudge"
     tool: str
     detail: str
     iteration: int
@@ -204,6 +218,75 @@ class EnvelopeRunResult:
     halted_for_commit: bool = False
     staged: bool = False
     unstaged_reads: int = 0
+    results_by_class: dict = field(default_factory=dict)
+
+
+# Typed tool-result feedback (A). Classify each tool result into one of four
+# categories so the agent self-corrects on a labeled signal and the Third Umpire
+# / history / best-of-K judge see a run's execution-quality profile. ComPilot's
+# RQ3 lens: typed feedback drove the agent's unproductive-proposal rate down
+# across iterations vs an opaque string.
+_ARG_INVALID_PREFIXES = (
+    "ERROR: unknown tool",
+    "ERROR: invalid call",
+    "ERROR: file not found",
+    "ERROR: not a regular file",
+    "ERROR: not a directory",
+    "ERROR: old_str not found",
+    "ERROR: old_str matches",
+)
+_RUNTIME_PREFIXES = (
+    "ERROR: command timed out",
+    "ERROR: unknown sandbox driver",
+)
+
+
+def classify_tool_result(result: str, raised: Exception | None = None) -> str:
+    """Return one of: success | arg-invalid | policy-refused | runtime-error.
+
+    - arg-invalid:    malformed call or precondition violation (reform the call)
+    - policy-refused: well-formed, but the envelope refused it (change approach / ask_human)
+    - runtime-error:  the operation ran but failed at execution (address the condition)
+    - success:        everything else
+    """
+    if raised is not None:
+        return "arg-invalid" if isinstance(raised, (TypeError, KeyError, ValueError)) else "runtime-error"
+    r = (result or "").lstrip()
+    if r.startswith("ENVELOPE REFUSED") or r.startswith("[HALTED]"):
+        return "policy-refused"
+    if r.startswith(_ARG_INVALID_PREFIXES):
+        return "arg-invalid"
+    if r.startswith(_RUNTIME_PREFIXES):
+        return "runtime-error"
+    m = re.search(r"\[exit (-?\d+)\]", r[:200])
+    if m:
+        return "success" if m.group(1) == "0" else "runtime-error"
+    if r.startswith("ERROR:"):
+        return "runtime-error"
+    return "success"
+
+
+def _prevalidate_call(tool: Tool, arguments: dict) -> str | None:
+    """Pre-exec validity gate (B). Reject a malformed call BEFORE executing the
+    (possibly expensive/side-effecting) tool — ComPilot's cheap two-stage filter.
+
+    v1: required-fields only. 'reason' is excluded — it is a policy concern
+    enforced separately (require_reason → policy-refused), not arg-validity.
+    Returns an arg-invalid message if the call is malformed, else None.
+    """
+    schema = tool.parameters or {}
+    required = [f for f in (schema.get("required") or []) if f != "reason"]
+    if not required:
+        return None
+    args = arguments or {}
+    missing = [f for f in required if f not in args or args.get(f) is None]
+    if missing:
+        return (
+            f"ERROR: invalid call to {tool.name}: missing required field(s) "
+            f"{missing}. The tool was NOT executed — no cost incurred. Provide "
+            f"{missing} and retry."
+        )
+    return None
 
 
 def _make_enforced_tool(
@@ -631,6 +714,14 @@ the loop if you exceed it.
   cap is hit. Spend is the real budget; iterations are a safety net. Each
   pressure nudge tells you tokens used — if you're burning tokens reading the
   same files repeatedly, stop and write.
+- **Revise with diffs, not rewrites.** When changing a file you already wrote,
+  emit the smallest `edit_file` diff — do NOT re-emit the whole file. Output
+  tokens are your most expensive budget (~5× input rate); re-dumping a file to
+  change a paragraph is the single biggest avoidable cost.
+- **Act on observed tool results, not assumptions.** Your grounded signal is the
+  tool output in this loop, not context you were primed with. If a read or
+  command result contradicts your plan, follow the result. Do not pad reasoning
+  with unverified context — verify it with a tool or label it as unverified.
 - **Failed writes do not consume your write budget.** If a `write_file` /
   `edit_file` call raises (e.g. TypeError on missing args) or returns an
   `ERROR:` sentinel, the attempt is logged but `writes_executed` does NOT
@@ -707,12 +798,17 @@ class EnvelopeRunner:
 
         # Run loop with halt hook + budget-pressure injections + spend/wall caps
         import time as _time
+        import json as _json
         from boundary.clients.base import ChatResponse
         tool_schemas = enforced.schemas()
         max_iters = self.agent.max_iters
         model_name = getattr(self.agent.client, "model", "unknown")
         pressure_iters = sorted({int(max_iters * f) for f in self.envelope.budget_pressure_at if 0 < f < 1})
         pressure_fired: set[int] = set()
+        action_counts: dict[str, int] = {}
+        results_by_class: dict[str, int] = {}
+        no_progress_halt = False
+        early_stop_nudged = False
         total_in = 0
         total_out = 0
         total_cached = 0
@@ -811,16 +907,75 @@ class EnvelopeRunner:
                 if resp.finish_reason == "tool_calls" and i < max_iters:
                     messages.append(Message(role="user", content="(continue — you said you'd use tools; issue them now)"))
                     continue
+                # D: one-shot early-stop nudge. The agent terminated; if it
+                # under-delivered (writes < min_writes) and budget remains, nudge
+                # once to finish or to call ask_human. Fires at most once.
+                _writes_so_far = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
+                if (self.envelope.nudge_on_early_stop and not early_stop_nudged
+                        and _writes_so_far < self.envelope.min_writes and i < max_iters):
+                    early_stop_nudged = True
+                    _iters_left = max_iters - i
+                    _nudge = (
+                        f"[envelope] you stopped at iter {i}/{max_iters} with "
+                        f"{_writes_so_far}/{self.envelope.min_writes} required write(s) and "
+                        f"{_iters_left} iters left. Either write to "
+                        f"{self.envelope.writable_paths} now, or call ask_human if you are "
+                        f"blocked. Do not stop under-delivered."
+                    )
+                    messages.append(Message(role="user", content=_nudge))
+                    events.append(EnvelopeEvent("early_stop_nudge", "loop",
+                        f"writes={_writes_so_far}/{self.envelope.min_writes}", i))
+                    if self.agent.transcript:
+                        self.agent.transcript.log("early_stop_nudge",
+                            iteration=i, writes_so_far=_writes_so_far, nudge=_nudge)
+                    if verbose:
+                        print(f"[{i}] {_nudge}")
+                    continue
                 break
             for tc in msg.tool_calls:
                 tool = enforced.get(tc.name)
+                _raised: Exception | None = None
                 if tool is None:
                     result = f"ERROR: unknown tool {tc.name}"
                 else:
+                    _preerr = _prevalidate_call(tool, tc.arguments)
+                    if _preerr is not None:
+                        # B: pre-exec validity gate — malformed call rejected
+                        # before the (expensive/side-effecting) tool runs.
+                        result = _preerr
+                    else:
+                        try:
+                            result = tool.call(tc.arguments)
+                        except Exception as e:
+                            _raised = e
+                            result = f"ERROR: {type(e).__name__}: {e}"
+                # A: typed feedback classification — label every result so the
+                # agent self-corrects on a category, not an opaque string.
+                result_class = classify_tool_result(result, _raised)
+                results_by_class[result_class] = results_by_class.get(result_class, 0) + 1
+                # D: repeated-action / no-progress detection. Identical tool calls
+                # (name + canonical args) repeated past a threshold signal a stuck
+                # agent burning budget on unproductive exchanges. Warn in-band,
+                # then halt the run once repeat_halt is reached.
+                if self.envelope.repeat_halt:
                     try:
-                        result = tool.call(tc.arguments)
-                    except Exception as e:
-                        result = f"ERROR: {type(e).__name__}: {e}"
+                        _sig = f"{tc.name}:{_json.dumps(tc.arguments, sort_keys=True, default=str)}"
+                    except Exception:
+                        _sig = f"{tc.name}:{tc.arguments!r}"
+                    _rc = action_counts.get(_sig, 0) + 1
+                    action_counts[_sig] = _rc
+                    if _rc >= self.envelope.repeat_halt:
+                        no_progress_halt = True
+                        events.append(EnvelopeEvent("no_progress", tc.name, f"identical call x{_rc}", i))
+                        result += (
+                            f"\n[envelope] NO-PROGRESS HALT: this exact call has run "
+                            f"{_rc}× with no new outcome. Stopping the run."
+                        )
+                    elif self.envelope.repeat_warn and _rc >= self.envelope.repeat_warn:
+                        result += (
+                            f"\n[envelope] repeated action: this exact call has run {_rc}× "
+                            f"with no new outcome. Change approach or stop — do not repeat it."
+                        )
                 # Always-on budget banner: prefix every tool_result so the agent
                 # cannot read a result without seeing remaining budget. This is
                 # the "make constraints unavoidable, not buried in setup" fix.
@@ -837,6 +992,7 @@ class EnvelopeRunner:
                     f"tokens {total_in:,}in/{total_out:,}out",
                     f"${est_now:.4f}",
                     f"staged {'yes' if staged else 'no'}",
+                    f"result {result_class}",
                 ]
                 if not staged and unstaged_reads:
                     banner_bits.append(f"orientation_reads {unstaged_reads}/{self.envelope.max_unstaged_reads}")
@@ -849,11 +1005,11 @@ class EnvelopeRunner:
                 banner = "[ENVELOPE: " + " | ".join(banner_bits) + "]"
                 wrapped_result = banner + "\n" + result
                 if self.agent.transcript:
-                    self.agent.transcript.log("tool_result", iteration=i, tool=tc.name, tool_call_id=tc.id, result=result[:2000])
+                    self.agent.transcript.log("tool_result", iteration=i, tool=tc.name, tool_call_id=tc.id, result=result[:2000], result_class=result_class)
                 if verbose:
                     print(f"[{i}] tool_result {tc.name}: {result[:300]}")
                 messages.append(Message(role="tool", content=wrapped_result, tool_call_id=tc.id, name=tc.name))
-            if halt_flag[0] or commit_halt_flag[0]:
+            if halt_flag[0] or commit_halt_flag[0] or no_progress_halt:
                 break
 
         c = enforced._counters  # type: ignore[attr-defined]
@@ -867,6 +1023,8 @@ class EnvelopeRunner:
             stop_reason = "commit_halt"
         elif halt_flag[0]:
             stop_reason = "ambiguity_halt"
+        elif no_progress_halt:
+            stop_reason = "no_progress_halt"
         else:
             stop_reason = "stop"
         loop_result = LoopResult(
@@ -902,6 +1060,7 @@ class EnvelopeRunner:
                 staged=bool(c.get("staged", 0)),
                 unstaged_reads=c.get("unstaged_reads", 0),
                 stage_calls=c.get("stage_calls", 0),
+                results_by_class=dict(results_by_class),
                 events=[{"kind": e.kind, "tool": e.tool, "detail": e.detail, "iteration": e.iteration} for e in events],
             )
         return EnvelopeRunResult(
@@ -924,4 +1083,5 @@ class EnvelopeRunner:
             halted_for_commit=commit_halt_flag[0],
             staged=bool(c.get("staged", 0)),
             unstaged_reads=c.get("unstaged_reads", 0),
+            results_by_class=dict(results_by_class),
         )

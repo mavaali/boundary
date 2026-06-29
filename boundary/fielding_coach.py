@@ -29,6 +29,12 @@ Principles (from the user's hallucinated-intent doctrine):
 - Reads are free; writes are gated. Always allowlist the minimum set of paths.
 - Force agents to stop at ambiguity rather than interpolate.
 - Pre-authorize the envelope. The agent runs inside it without further checks.
+- Favor revision-by-diff: when the task edits an existing file, say so in `task`
+  and steer the agent to `edit_file` over full rewrites. Output tokens are the
+  real cost — full-file rewrites run ~5× more expensive than targeted edits.
+- Spend the budget on feedback loops, not fat priming. A tight task with good
+  tool grounding beats a long context dump; extra static context rarely changes
+  the outcome once the agent is acting on real tool results.
 
 When proposing:
 - `restated_intent` — restate the user's goal in 1-2 sentences. If the original
@@ -208,3 +214,63 @@ def dispatch(
         return runner.run(proposal.task, verbose=verbose)
     finally:
         agent.close()
+
+
+def dispatch_best_of_k(
+    proposal: EnvelopeProposal,
+    workspace: str | Path,
+    squad_dir: str | Path | None = None,
+    client: str = "copilot",
+    model: str | None = None,
+    verbose: bool = False,
+    on_commit: str = "refuse",
+    commit_allowlist: list[str] | None = None,
+    *,
+    runs: int = 3,
+    mode: str = "interactive",
+    select_margin: float = 0.15,
+    judge_model: str | None = None,
+    headless_fallback: str = "auto_pick_flag",
+):
+    """Best-of-K variant of dispatch: fan the proposal out K times and select a
+    winner. Mirrors dispatch() but routes through boundary.multirun.run_best_of_k.
+    """
+    from boundary.multirun import run_best_of_k
+    from boundary.clients import make_client
+    from boundary.transcript import Transcript
+    from boundary.history import History
+
+    workspace = Path(workspace).expanduser()
+    squad = Path(squad_dir).expanduser() if squad_dir else (workspace / ".squad" / "agents")
+    charter = squad / proposal.persona / "charter.md"
+    if not charter.exists():
+        raise FileNotFoundError(f"persona charter not found: {charter}")
+
+    env = proposal.to_envelope()
+    env.on_commit = on_commit
+    env.commit_allowlist = list(commit_allowlist or [])
+
+    def factory(run_index: int):
+        a = load_persona(charter=charter, workspace=workspace, client=client, model=model,
+                         enable_clawpilot=True, max_iters=proposal.max_iters)
+        if a.transcript:
+            a.transcript.close()
+        a.transcript = Transcript(agent_name=f"{proposal.persona}-run{run_index}")
+        return a
+
+    def temp_for(run_index: int):
+        if runs <= 1:
+            return {}
+        return {"temperature": round(0.2 + 0.4 * (run_index - 1) / (runs - 1), 3)}
+
+    judge_client = make_client(client, model=(judge_model or model))
+    hist = History()
+    try:
+        return run_best_of_k(
+            agent_factory=factory, base_envelope=env, task=proposal.task,
+            workspace_root=workspace, k=runs, chat_kwargs_for=temp_for,
+            judge_client=judge_client, mode=mode, select_margin=select_margin,
+            headless_fallback=headless_fallback, history=hist, verbose=verbose,
+        )
+    finally:
+        hist.close()
