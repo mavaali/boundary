@@ -173,6 +173,23 @@ def main(argv: list[str] | None = None) -> int:
     disc.add_argument("--client", default="copilot")
     disc.add_argument("--model", default=None)
 
+    tasks_p = sub.add_parser("tasks", help="inspect/manage the results->tasks queue")
+    tasks_sub = tasks_p.add_subparsers(dest="tasks_cmd", required=False)
+    tl = tasks_sub.add_parser("list", help="list tasks (optionally by status)")
+    tl.add_argument("--status", default=None, choices=["pending", "ready", "done", "rejected"])
+    tl.add_argument("--limit", type=int, default=50)
+    tasks_sub.add_parser("ready", help="list pending tasks in priority order (the ready queue)")
+    ta = tasks_sub.add_parser("add", help="manually enqueue a task")
+    ta.add_argument("title")
+    ta.add_argument("--detail", default=None)
+    ta.add_argument("--priority", type=int, default=2)
+    tdone = tasks_sub.add_parser("done", help="mark a task done")
+    tdone.add_argument("id", type=int)
+    trej = tasks_sub.add_parser("reject", help="reject a task")
+    trej.add_argument("id", type=int)
+    tappr = tasks_sub.add_parser("approve", help="mark a pending task ready for dispatch")
+    tappr.add_argument("id", type=int)
+
     run = sub.add_parser("run", help="run an agent on a task")
     run.add_argument("--name", default="agent")
     run.add_argument("--system", help="system prompt string")
@@ -526,6 +543,37 @@ def main(argv: list[str] | None = None) -> int:
                                     client=args.client, model=args.model, on_commit="refuse")
             else:
                 dispatch(proposal, workspace=ws, client=args.client, model=args.model, on_commit="refuse")
+        return 0
+
+    if args.cmd == "tasks":
+        from boundary.history import History
+        import datetime as _dt
+        h = History()
+        cmd = getattr(args, "tasks_cmd", None) or "ready"
+        if cmd == "add":
+            tid = h.add_task(title=args.title, detail=args.detail, priority=args.priority)
+            print(f"[ok] added task {tid}")
+            return 0
+        if cmd in ("done", "reject", "approve"):
+            new = {"done": "done", "reject": "rejected", "approve": "ready"}[cmd]
+            h.set_task_status(args.id, new)
+            print(f"[ok] task {args.id} -> {new}")
+            return 0
+        status = "pending" if cmd == "ready" else getattr(args, "status", None)
+        rows = h.list_tasks(status=status, limit=getattr(args, "limit", 50))
+        if not rows:
+            print(f"(no tasks{' with status ' + status if status else ''})")
+            return 0
+        if cmd == "ready":
+            print(f"[ready queue] {len(rows)} pending task(s), priority order:")
+        for r in rows:
+            ts = _dt.datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M")
+            parent = f" <-run#{r['parent_run_id']}" if r["parent_run_id"] else ""
+            trig = f" ({r['trigger_rule']})" if r["trigger_rule"] else ""
+            print(f"  #{r['id']:4d} P{r['priority']} [{r['status']:8s}] {ts}{parent}{trig}")
+            print(f"        {r['title'][:100]}")
+            if r["origin"]:
+                print(f"        origin: {r['origin']}")
         return 0
 
     if args.cmd == "state":

@@ -62,6 +62,9 @@ class ScheduleConfig:
     # Discovery/triage schedules are read-heavy — default to synthesis when a
     # discover: block is present unless the YAML overrides it.
     write_profile: str = "edit"
+    # Declarative trigger rules: turn this run's outcome into new queued tasks
+    # (results->tasks loop). Tasks are enqueued pending, never auto-dispatched.
+    triggers: list = field(default_factory=list)
 
     @classmethod
     def load(cls, path: str | Path) -> "ScheduleConfig":
@@ -100,6 +103,7 @@ class ScheduleConfig:
             headless_fallback=data.get("headless_fallback", "auto_pick_flag"),
             discover=data.get("discover"),
             write_profile=data.get("write_profile", "synthesis" if data.get("discover") else "edit"),
+            triggers=list(data.get("triggers", []) or []),
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:

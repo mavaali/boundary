@@ -25,6 +25,17 @@ envelope:
 
 on_ambiguity: best_effort   # headless: no human in the loop at 8am Monday
 write_profile: synthesis    # read-heavy triage — grade spend on input-grounding, not tokens/write
+
+# Results->tasks loop: turn this run's outcome into queued tasks (human-gated).
+triggers:
+  - "on": discovery
+    action: enqueue_discovered
+    priority: 2
+    max_emit: 25
+  - "on": verdict
+    when: FAIL
+    action: enqueue_followup
+    priority: 1
 on_failure: digest
 on_commit: refuse
 sandbox_driver: seatbelt
