@@ -129,6 +129,13 @@ class History:
         cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
         return [dict(zip(cols, r)) for r in rows]
 
+    def runs_for_workspace(self, workspace: str, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM runs WHERE workspace=? ORDER BY started_at DESC LIMIT ?",
+            (workspace, limit)).fetchall()
+        cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
+        return [dict(zip(cols, r)) for r in rows]
+
     def list_open_reviews(self, limit: int = 50) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM review_queue WHERE resolved=0 ORDER BY queued_at DESC LIMIT ?",

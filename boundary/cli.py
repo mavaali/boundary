@@ -91,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     fc.add_argument("--judge-model", default=None, help="best-of-K: model for the selection judge")
     fc.add_argument("--headless-fallback", choices=["auto_pick_flag", "defer"], default="auto_pick_flag",
                     help="best-of-K headless close-call behavior")
+    fc.add_argument("--retry", type=int, default=1, metavar="N",
+                    help="on Third Umpire FAIL, tighten envelope + re-dispatch up to N attempts (default 1 = off)")
 
     # Phase 3: schedules
     sched_inst = sub.add_parser("schedule", help="install/uninstall/list scheduled headless runs (OS scheduler)")
@@ -154,6 +156,21 @@ def main(argv: list[str] | None = None) -> int:
     taint_g = taint_p.add_mutually_exclusive_group()
     taint_g.add_argument("--show", action="store_true", help="print the ledger (default)")
     taint_g.add_argument("--clear", action="store_true", help="delete the ledger")
+
+    state_p = sub.add_parser("state", help="render compounding STATE.md for a workspace (now/last/waiting)")
+    state_p.add_argument("workspace", nargs="?", default=".", help="workspace path (default: .)")
+    state_p.add_argument("--write", action="store_true", help="write STATE.md into the workspace root")
+    state_p.add_argument("--last-n", type=int, default=5, help="how many recent runs to summarize")
+
+    disc = sub.add_parser("discover", help="scan a source for work and emit tasks (Discover beat); dry-run by default")
+    disc.add_argument("workspace", nargs="?", default=".", help="workspace path (default: .)")
+    disc.add_argument("--source", default="markers", help="work source (default: markers)")
+    disc.add_argument("--marker", default="BOUNDARY-TASK:", help="inline marker for the markers source")
+    disc.add_argument("--max-tasks", type=int, default=25)
+    disc.add_argument("--dispatch", action="store_true", help="fan out each task via Fielding Coach (default: dry-run list)")
+    disc.add_argument("--retry", type=int, default=1, help="per-task FAIL retighten attempts when dispatching")
+    disc.add_argument("--client", default="copilot")
+    disc.add_argument("--model", default=None)
 
     run = sub.add_parser("run", help="run an agent on a task")
     run.add_argument("--name", default="agent")
@@ -259,6 +276,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{role_label}] cancelled (re-run with a tightened prompt to revise).")
                 return 1
         print(f"\n[{role_label}] dispatching (on_commit={on_commit})...\n")
+        if args.retry and args.retry > 1:
+            from boundary.retry import dispatch_with_retry
+            rr = dispatch_with_retry(
+                proposal, workspace=workspace, max_attempts=args.retry,
+                client=args.client, model=args.model, verbose=args.verbose,
+                on_commit=on_commit, commit_allowlist=commit_allowlist,
+            )
+            print(f"\n[retry] attempts={len(rr.attempts)} final={rr.final_verdict}")
+            for a in rr.attempts:
+                print(f"  attempt {a.n}: {a.verdict}" + (f" — fails: {a.failed}" if a.failed else ""))
+            return 0 if rr.final_verdict != "FAIL" else 2
         if args.runs and args.runs > 1:
             if not proposal.writable_paths:
                 print("ERROR: --runs requires the proposal to declare writable_paths")
@@ -465,6 +493,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[done] pipeline={out['pipeline']} stop={out['stop_reason']} {out['wall_seconds']:.1f}s")
         failed = out.get("stop_reason") == "planning_failed" or any(step.get("error") for step in out["steps"])
         return 2 if failed else 0
+
+    if args.cmd == "discover":
+        from boundary.discover import discover, run_discovery
+        ws = str(Path(args.workspace).expanduser())
+        tasks = discover(ws, source=args.source, max_tasks=args.max_tasks, marker=args.marker) \
+            if args.source == "markers" else discover(ws, source=args.source, max_tasks=args.max_tasks)
+        if not tasks:
+            print(f"(no work found via source={args.source})")
+            return 0
+        print(f"[discover] {len(tasks)} task(s) via {args.source}:")
+        for t in tasks:
+            print(f"  - {t.title}  [{t.origin}]")
+        if not args.dispatch:
+            print("\n(dry-run; pass --dispatch to fan out)")
+            return 0
+        from boundary.fielding_coach import FieldingCoach, dispatch
+        from boundary.retry import dispatch_with_retry
+        fc = FieldingCoach(client=args.client, model=args.model or "claude-sonnet-4.5")
+        for t in tasks:
+            print(f"\n[dispatch] {t.title}")
+            proposal = fc.propose(t.detail, workspace_hint=ws)
+            if proposal.clarifying_questions:
+                print("  blocked: clarifying questions — skipping"); continue
+            if args.retry > 1:
+                dispatch_with_retry(proposal, workspace=ws, max_attempts=args.retry,
+                                    client=args.client, model=args.model, on_commit="refuse")
+            else:
+                dispatch(proposal, workspace=ws, client=args.client, model=args.model, on_commit="refuse")
+        return 0
+
+    if args.cmd == "state":
+        from boundary.history import History
+        from boundary.state import render_state, write_state
+        h = History()
+        ws = str(Path(args.workspace).expanduser())
+        if args.write:
+            out = write_state(ws, h, last_n=args.last_n)
+            print(f"[ok] wrote {out}")
+        else:
+            print(render_state(ws, h, last_n=args.last_n))
+        return 0
 
     if args.cmd == "history":
         from boundary.history import History
