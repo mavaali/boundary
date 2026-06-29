@@ -48,6 +48,21 @@ CREATE TABLE IF NOT EXISTS review_queue (
     FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 CREATE INDEX IF NOT EXISTS review_open_idx ON review_queue(resolved, queued_at);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT,
+    priority INTEGER DEFAULT 2,
+    status TEXT DEFAULT 'pending',          -- pending | ready | done | rejected
+    parent_run_id INTEGER,                  -- causal edge: which run spawned this task
+    schedule_name TEXT,
+    origin TEXT,                            -- source spec path / discovery origin
+    trigger_rule TEXT,                      -- which trigger produced it
+    FOREIGN KEY (parent_run_id) REFERENCES runs(id)
+);
+CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks(status, priority, created_at);
 """
 
 
@@ -147,6 +162,36 @@ class History:
         self._conn.execute(
             "UPDATE review_queue SET resolved=1, resolved_at=?, resolution=? WHERE id=?",
             (time.time(), resolution, review_id))
+        self._conn.commit()
+
+    # --- task queue (BabyAGI-style results->tasks loop, human-gated) ----------
+    def add_task(self, *, title: str, detail: str | None = None, priority: int = 2,
+                 parent_run_id: int | None = None, schedule_name: str | None = None,
+                 origin: str | None = None, trigger_rule: str | None = None,
+                 status: str = "pending") -> int:
+        cur = self._conn.execute(
+            """INSERT INTO tasks(created_at, title, detail, priority, status,
+                parent_run_id, schedule_name, origin, trigger_rule)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (time.time(), title, detail, priority, status,
+             parent_run_id, schedule_name, origin, trigger_rule))
+        self._conn.commit()
+        return cur.lastrowid
+
+    def list_tasks(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        if status:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status=? ORDER BY priority ASC, created_at ASC LIMIT ?",
+                (status, limit)).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC LIMIT ?",
+                (limit,)).fetchall()
+        cols = [c[0] for c in self._conn.execute("SELECT * FROM tasks LIMIT 0").description]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def set_task_status(self, task_id: int, status: str) -> None:
+        self._conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
         self._conn.commit()
 
     def close(self):

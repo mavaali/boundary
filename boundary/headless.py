@@ -211,6 +211,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     wall_seconds = 0.0
     error_text: str | None = None
     review_id: int | None = None
+    discovered_tasks: list = []
 
     try:
         workspace = Path(config.workspace).expanduser()
@@ -226,24 +227,25 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         rendered_paths = config.rendered_writable_paths()
         rendered_task = config.rendered_task()
 
+        discovered_tasks = []
         # Discover beat: if configured, scan the source and prepend the week's
         # open questions into the task so the persona triages real, scoped work.
         if config.discover:
             from boundary.discover import discover as _discover
             d = config.discover
             try:
-                dtasks = _discover(
+                discovered_tasks = _discover(
                     workspace, source=d.get("source", "fabricspecs_questions"),
                     max_tasks=int(d.get("max_tasks", 15)),
                     owner=d.get("owner", "mihirwagle"),
                 )
             except TypeError:
-                dtasks = _discover(workspace, source=d.get("source", "markers"),
+                discovered_tasks = _discover(workspace, source=d.get("source", "markers"),
                                    max_tasks=int(d.get("max_tasks", 15)))
-            if dtasks:
-                lines = "\n".join(f"{i}. {t.title}  [{t.origin}]" for i, t in enumerate(dtasks, 1))
+            if discovered_tasks:
+                lines = "\n".join(f"{i}. {t.title}  [{t.origin}]" for i, t in enumerate(discovered_tasks, 1))
                 rendered_task = (
-                    f"{rendered_task}\n\n--- DISCOVERED THIS RUN ({len(dtasks)} open items) ---\n{lines}"
+                    f"{rendered_task}\n\n--- DISCOVERED THIS RUN ({len(discovered_tasks)} open items) ---\n{lines}"
                 )
             else:
                 rendered_task = f"{rendered_task}\n\n--- DISCOVERED THIS RUN ---\n(no open items found)"
@@ -408,6 +410,24 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             question=q, options=opts, transcript_path=transcript_path, run_id=run_id,
         )
 
+    # Trigger evaluation (results->tasks loop): match this run's outcome against
+    # the schedule's trigger rules and enqueue any emitted tasks as pending
+    # (human-gated — never auto-dispatched).
+    enqueued_task_ids: list = []
+    if getattr(config, "triggers", None):
+        from boundary.triggers import load_rules, evaluate_triggers, RunOutcome
+        outcome = RunOutcome(
+            verdict=third_umpire_verdict, discovered=discovered_tasks,
+            error=error_text, schedule_name=config.name,
+        )
+        for nt in evaluate_triggers(load_rules(config.triggers), outcome):
+            tid = history.add_task(
+                title=nt.title, detail=nt.detail, priority=nt.priority,
+                parent_run_id=run_id, schedule_name=config.name,
+                origin=nt.origin, trigger_rule=nt.trigger_rule, status="pending",
+            )
+            enqueued_task_ids.append(tid)
+
     history.close()
     event_path = _emit_scout_hook_event(
         config,
@@ -430,4 +450,5 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         "dollars": estimated_dollars, "wall_seconds": wall_seconds,
         "event_path": event_path,
         "written_files": written_files, "error": error_text,
+        "enqueued_task_ids": enqueued_task_ids,
     }
