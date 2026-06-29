@@ -24,6 +24,7 @@ envelope:
   max_wall_seconds: 900
 
 on_ambiguity: best_effort   # headless: no human in the loop at 8am Monday
+write_profile: synthesis    # read-heavy triage — grade spend on input-grounding, not tokens/write
 on_failure: digest
 on_commit: refuse
 sandbox_driver: seatbelt

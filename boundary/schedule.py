@@ -58,6 +58,10 @@ class ScheduleConfig:
     # injects the discovered tasks into the persona's prompt as "this week's work".
     # Shape: {source: str, owner: str, max_tasks: int}. None = no discovery.
     discover: dict | None = None
+    # Write profile for the Third Umpire spend axis: "edit" | "batch" | "synthesis".
+    # Discovery/triage schedules are read-heavy — default to synthesis when a
+    # discover: block is present unless the YAML overrides it.
+    write_profile: str = "edit"
 
     @classmethod
     def load(cls, path: str | Path) -> "ScheduleConfig":
@@ -95,6 +99,7 @@ class ScheduleConfig:
             judge_model=data.get("judge_model"),
             headless_fallback=data.get("headless_fallback", "auto_pick_flag"),
             discover=data.get("discover"),
+            write_profile=data.get("write_profile", "synthesis" if data.get("discover") else "edit"),
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:
