@@ -164,8 +164,9 @@ def main(argv: list[str] | None = None) -> int:
 
     disc = sub.add_parser("discover", help="scan a source for work and emit tasks (Discover beat); dry-run by default")
     disc.add_argument("workspace", nargs="?", default=".", help="workspace path (default: .)")
-    disc.add_argument("--source", default="markers", help="work source (default: markers)")
+    disc.add_argument("--source", default="markers", help="work source (markers | fabricspecs_questions)")
     disc.add_argument("--marker", default="BOUNDARY-TASK:", help="inline marker for the markers source")
+    disc.add_argument("--owner", default="mihirwagle", help="owner: frontmatter to scope the fabricspecs_questions source")
     disc.add_argument("--max-tasks", type=int, default=25)
     disc.add_argument("--dispatch", action="store_true", help="fan out each task via Fielding Coach (default: dry-run list)")
     disc.add_argument("--retry", type=int, default=1, help="per-task FAIL retighten attempts when dispatching")
@@ -497,8 +498,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "discover":
         from boundary.discover import discover, run_discovery
         ws = str(Path(args.workspace).expanduser())
-        tasks = discover(ws, source=args.source, max_tasks=args.max_tasks, marker=args.marker) \
-            if args.source == "markers" else discover(ws, source=args.source, max_tasks=args.max_tasks)
+        if args.source == "markers":
+            tasks = discover(ws, source=args.source, max_tasks=args.max_tasks, marker=args.marker)
+        elif args.source == "fabricspecs_questions":
+            tasks = discover(ws, source=args.source, max_tasks=args.max_tasks, owner=args.owner)
+        else:
+            tasks = discover(ws, source=args.source, max_tasks=args.max_tasks)
         if not tasks:
             print(f"(no work found via source={args.source})")
             return 0

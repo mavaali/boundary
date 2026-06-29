@@ -64,7 +64,15 @@ class DiscoveryResult:
     dispatched: list[dict] = field(default_factory=list)
 
 
+def _ensure_optional_source(source: str) -> None:
+    """Lazy-register built-in optional sources that live in their own modules
+    (kept out of the top-level import to avoid a circular import)."""
+    if source == "fabricspecs_questions" and source not in SOURCES:
+        import boundary.sources_fabricspecs  # noqa: F401  (registers on import)
+
+
 def discover(workspace, *, source: str = "markers", max_tasks: int = 25, **kw) -> list[DiscoveredTask]:
+    _ensure_optional_source(source)
     if source not in SOURCES:
         raise ValueError(f"unknown source: {source} (have {sorted(SOURCES)})")
     return SOURCES[source](workspace, max_tasks=max_tasks, **kw)
