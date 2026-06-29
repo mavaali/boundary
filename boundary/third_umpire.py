@@ -281,25 +281,46 @@ class ThirdUmpire:
                     severity="warn",
                 ))
 
-        # Check 8: spend pacing — tokens per write
+        # Check 8: spend pacing — axis depends on the declared write_profile.
+        #   edit/batch  -> tokens-per-write (cheap output expected)
+        #   synthesis   -> input-grounding (read-heavy is fine if it produced a
+        #                  real artifact and didn't truly run away)
         writes_exec = (envelope_end or {}).get("writes_executed", 0)
         total_in = (envelope_end or {}).get("input_tokens", 0)
         total_out = (envelope_end or {}).get("output_tokens", 0)
         est_dollars = (envelope_end or {}).get("estimated_dollars", 0.0)
+        write_profile = (envelope_start or {}).get("write_profile", "edit")
         if (envelope_start or {}).get("writable_paths") and writes_exec > 0:
             tokens_per_write = (total_in + total_out) // max(writes_exec, 1)
-            # Heuristic: under 100K tokens/write is fine, 100-300K is warn, >300K is fail
-            if tokens_per_write > 300_000:
-                sev, passed = "fail", False
-            elif tokens_per_write > 100_000:
-                sev, passed = "warn", False
+            if write_profile == "synthesis":
+                # Read-heavy by design. The failure mode is not "spent a lot" but
+                # "spent a lot and produced nothing" (churn) or true runaway.
+                if total_out < 500:
+                    sev, passed = "fail", False
+                    why = "read-heavy run produced a negligible artifact (output < 500 tok) — churn, not synthesis"
+                elif tokens_per_write > 1_500_000:
+                    sev, passed = "fail", False
+                    why = "runaway even for synthesis (>1.5M tokens/write)"
+                elif tokens_per_write > 800_000:
+                    sev, passed = "warn", False
+                    why = "high for synthesis (>800K tokens/write) — confirm the input is landing in the artifact"
+                else:
+                    sev, passed = "warn", True
+                    why = "graded on input-grounding (synthesis profile): read-heavy spend is expected"
+                detail = (f"[synthesis] {tokens_per_write:,} tokens/write "
+                          f"(in={total_in:,} out={total_out:,} writes={writes_exec}, est ${est_dollars:.4f}) — {why}")
             else:
-                sev, passed = "warn", True
+                # edit / batch: cheap output expected — tokens/write is the axis.
+                if tokens_per_write > 300_000:
+                    sev, passed = "fail", False
+                elif tokens_per_write > 100_000:
+                    sev, passed = "warn", False
+                else:
+                    sev, passed = "warn", True
+                detail = (f"[{write_profile}] {tokens_per_write:,} tokens per write "
+                          f"(in={total_in:,} out={total_out:,} writes={writes_exec}, est ${est_dollars:.4f})")
             report.checks.append(CheckResult(
-                "spend_pacing",
-                passed=passed,
-                detail=f"{tokens_per_write:,} tokens per write (in={total_in:,} out={total_out:,} writes={writes_exec}, est ${est_dollars:.4f})",
-                severity=sev,
+                "spend_pacing", passed=passed, detail=detail, severity=sev,
             ))
 
         # Check 9: budget halt

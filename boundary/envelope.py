@@ -149,6 +149,12 @@ class Envelope:
     #   "refuse" — block the write; tainted content must not reach a writable sink.
     #   "allow"  — disable the check (a downgrade; surfaced by the Third Umpire).
     on_taint: str = "warn"
+    # Write profile — declares the run's shape so the Third Umpire's spend check
+    # uses the right axis. "edit"/"batch" are graded on tokens-per-write (cheap
+    # output expected). "synthesis" is read-heavy by design (research, triage,
+    # summary) and is graded on input-grounding instead — large input is fine if
+    # it lands in the artifact rather than churning.
+    write_profile: str = "edit"  # "edit" | "batch" | "synthesis"
     # USD per 1M tokens by model id. "cached" defaults to 0.1× input if absent.
     # Source: published rates as of 2026.
     token_rates: dict = field(default_factory=lambda: {
@@ -793,6 +799,7 @@ class EnvelopeRunner:
                 max_dollars=self.envelope.max_dollars,
                 require_staging=self.envelope.require_staging,
                 max_unstaged_reads=self.envelope.max_unstaged_reads,
+                write_profile=self.envelope.write_profile,
                 task=task,
             )
 

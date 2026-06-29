@@ -292,6 +292,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             on_commit=config.on_commit,
             commit_allowlist=list(config.commit_allowlist or []),
             on_taint=config.on_taint,
+            write_profile=config.write_profile,
         )
         if config.runs and config.runs > 1:
             # Best-of-K, headless: fan out K runs, never block on close calls.
