@@ -54,6 +54,10 @@ class ScheduleConfig:
     select_margin: float = 0.15
     judge_model: str | None = None
     headless_fallback: str = "auto_pick_flag"
+    # Optional Discover beat: when set, headless runs a discovery source first and
+    # injects the discovered tasks into the persona's prompt as "this week's work".
+    # Shape: {source: str, owner: str, max_tasks: int}. None = no discovery.
+    discover: dict | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> "ScheduleConfig":
@@ -90,6 +94,7 @@ class ScheduleConfig:
             select_margin=float(data.get("select_margin", 0.15)),
             judge_model=data.get("judge_model"),
             headless_fallback=data.get("headless_fallback", "auto_pick_flag"),
+            discover=data.get("discover"),
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:

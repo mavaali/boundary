@@ -1,0 +1,47 @@
+name: fabricspecs-open-questions-weekly
+schedule: "weekly mon 08:00"
+persona: vision
+workspace: ~/projects/FabricSpecs/Data Factory/by-area/transformation
+
+# Discover beat: scan Mihir's discoverable specs for unanswered Open Questions.
+# The discovered list is injected into the task below; the persona triages it
+# into a weekly digest. Dispatch of any individual question stays manual
+# (Decide hands unresolved work to the human).
+discover:
+  source: fabricspecs_questions
+  owner: mihirwagle
+  max_tasks: 15
+
+envelope:
+  writable_paths:
+    - specs/_digests/open-questions-{date}.md
+  max_writes: 1
+  min_writes: 1
+  require_staging: true
+  max_unstaged_reads: 5
+  max_iters: 25
+  max_dollars: 0.75
+  max_wall_seconds: 900
+
+on_ambiguity: best_effort   # headless: no human in the loop at 8am Monday
+on_failure: digest
+on_commit: refuse
+sandbox_driver: seatbelt
+notify: digest_daily
+
+task: |
+  Weekly open-questions triage for Mihir's transformation specs.
+
+  Below is this run's list of unanswered Open Questions discovered across specs
+  that are owner: mihirwagle and discoverable: true. For each, you have read
+  access to the specs.
+
+  Produce ONE digest file with, per question:
+  - the question and its source spec
+  - a one-line proposed next step (who to ask / what to decide / what to check)
+  - a priority: P0 (blocks a spec) / P1 / P2
+
+  Group by spec. Keep it to a scannable page. Do NOT edit the specs themselves —
+  this is a triage digest only. Label any claim [DATA], [HYPOTHESIS], [TRAINING].
+
+  If the discovered list is empty, write "No open questions outstanding."

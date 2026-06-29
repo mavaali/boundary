@@ -226,6 +226,28 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         rendered_paths = config.rendered_writable_paths()
         rendered_task = config.rendered_task()
 
+        # Discover beat: if configured, scan the source and prepend the week's
+        # open questions into the task so the persona triages real, scoped work.
+        if config.discover:
+            from boundary.discover import discover as _discover
+            d = config.discover
+            try:
+                dtasks = _discover(
+                    workspace, source=d.get("source", "fabricspecs_questions"),
+                    max_tasks=int(d.get("max_tasks", 15)),
+                    owner=d.get("owner", "mihirwagle"),
+                )
+            except TypeError:
+                dtasks = _discover(workspace, source=d.get("source", "markers"),
+                                   max_tasks=int(d.get("max_tasks", 15)))
+            if dtasks:
+                lines = "\n".join(f"{i}. {t.title}  [{t.origin}]" for i, t in enumerate(dtasks, 1))
+                rendered_task = (
+                    f"{rendered_task}\n\n--- DISCOVERED THIS RUN ({len(dtasks)} open items) ---\n{lines}"
+                )
+            else:
+                rendered_task = f"{rendered_task}\n\n--- DISCOVERED THIS RUN ---\n(no open items found)"
+
         extra_system = None
         stop_on_ambiguity = True
         if config.on_ambiguity == "best_effort":
