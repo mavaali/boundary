@@ -19,10 +19,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from boundary.envelope import Envelope, EnvelopeEvent, _make_enforced_tool
-from boundary.tools.registry import Tool, ToolRegistry
-from boundary.tools.workspace import Workspace
 from boundary.tools.fs import register_fs_tools
+from boundary.tools.registry import Tool, ToolRegistry
 from boundary.tools.sandbox import run_sandboxed
+from boundary.tools.workspace import Workspace
 
 
 @dataclass
@@ -158,6 +158,72 @@ def check_write_outside_allowlist() -> SelftestResult:
                 if passed
                 else f"LEAK: refused={refused} not_executed={not_executed} "
                 f"not_on_disk={not_on_disk} result={result!r}"
+            ),
+        )
+
+
+def check_symlink_escape_refused() -> SelftestResult:
+    """A symlink inside the workspace pointing OUTSIDE must not become a read or
+    write escape hatch. The write case is the sharp one: the symlink's *name* is
+    on the writable allowlist, so the only thing standing between the agent and an
+    out-of-jail write is `Workspace.resolve()` following the link and rejecting
+    the resolved target. This pins that the allowlist is by-name but the jail is
+    by-resolved-path."""
+    name = "symlink_escape_refused"
+    with tempfile.TemporaryDirectory() as outside_d, tempfile.TemporaryDirectory() as ws_d:
+        outside = Path(outside_d).resolve()
+        secret = outside / "secret.txt"
+        secret.write_text("SECRET", encoding="utf-8")
+        target = outside / "exfil.txt"  # write target, must never be created
+
+        root = Path(ws_d).resolve()
+        # Two symlinks inside the workspace, both pointing outside it.
+        read_link = root / "rlink"
+        write_link = root / "wlink"
+        try:
+            read_link.symlink_to(secret)
+            write_link.symlink_to(target)
+        except OSError as e:
+            return SelftestResult(name, passed=False,
+                                  detail=f"could not create symlink fixture: {e}")
+
+        # write_link's NAME is on the allowlist — only resolve() can stop the escape.
+        env = Envelope(writable_paths=["wlink"], max_writes=2)
+        env.require_staging = False
+        enforced, counters, events, ws = _enforced_fs(root, env)
+
+        def _blocked(call) -> tuple[bool, str]:
+            try:
+                out = call()
+            except PermissionError as e:
+                return True, f"PermissionError: {e}"
+            return ("ERROR" in out or "ENVELOPE REFUSED" in out), out
+
+        read_blocked, read_out = _blocked(
+            lambda: enforced.get("read_file").call({"path": "rlink"})
+        )
+        secret_leaked = "SECRET" in read_out
+        write_blocked, _ = _blocked(
+            lambda: enforced.get("write_file").call(
+                {"path": "wlink", "content": "x", "reason": "redteam"}
+            )
+        )
+        target_written = target.exists()
+        not_executed = counters.get("writes_executed", 0) == 0
+
+        passed = (
+            read_blocked and not secret_leaked
+            and write_blocked and not target_written and not_executed
+        )
+        return SelftestResult(
+            name,
+            passed,
+            detail=(
+                "symlink read and write escapes both refused; jail held"
+                if passed
+                else f"LEAK: read_blocked={read_blocked} secret_leaked={secret_leaked} "
+                f"write_blocked={write_blocked} target_written={target_written} "
+                f"not_executed={not_executed}"
             ),
         )
 
@@ -310,6 +376,7 @@ def check_taint_flow() -> SelftestResult:
 # Order: enforced guarantees first, then gated (expected_fail) ones.
 CHECKS = [
     check_write_outside_allowlist,
+    check_symlink_escape_refused,
     check_staging_gate_before_write,
     check_commit_refused,
     check_downgrade_surfaced,
