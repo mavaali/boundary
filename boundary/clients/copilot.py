@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 import os
 import stat
@@ -8,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from boundary.clients._http import request_with_retry
 from boundary.clients.base import ChatResponse, Message, ModelClient, ToolCall
 
 COPILOT_API = "https://api.githubcopilot.com/chat/completions"
@@ -40,7 +42,7 @@ def _load_oauth_token_from_disk() -> str | None:
         return None
     _validate_oauth_token_file_permissions(APPS_JSON_PATH)
     data = json.loads(APPS_JSON_PATH.read_text())
-    for key, val in data.items():
+    for val in data.values():
         if isinstance(val, dict) and val.get("oauth_token"):
             return val["oauth_token"]
     return None
@@ -154,7 +156,7 @@ class CopilotClient(ModelClient):
         now = int(time.time())
         if self._copilot_token and now < self._copilot_token_expires - 60:
             return self._copilot_token
-        r = httpx.get(
+        r = request_with_retry(lambda: httpx.get(
             COPILOT_TOKEN_URL,
             headers={
                 "Authorization": f"token {self._oauth_token}",
@@ -164,7 +166,7 @@ class CopilotClient(ModelClient):
                 "Accept": "application/json",
             },
             timeout=30.0,
-        )
+        ))
         r.raise_for_status()
         data = r.json()
         self._copilot_token = data["token"]
@@ -190,7 +192,7 @@ class CopilotClient(ModelClient):
             if k in kwargs:
                 payload[k] = kwargs[k]
 
-        r = httpx.post(
+        r = request_with_retry(lambda: httpx.post(
             COPILOT_API,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -201,7 +203,7 @@ class CopilotClient(ModelClient):
             },
             json=payload,
             timeout=self.timeout,
-        )
+        ))
         if r.status_code >= 400:
             raise RuntimeError(f"copilot api {r.status_code}: {r.text[:500]}")
         data = r.json()
