@@ -1,4 +1,3 @@
-from pathlib import Path
 from boundary.taint import TaintStore, _ledger_root
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 
 from boundary.third_umpire import ThirdUmpire

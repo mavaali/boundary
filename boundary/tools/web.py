@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import httpx
 
 from boundary.tools.registry import ToolRegistry

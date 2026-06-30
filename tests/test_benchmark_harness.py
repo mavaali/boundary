@@ -6,9 +6,9 @@ in attack-success isolates the defense.
 """
 from __future__ import annotations
 
-from boundary.clients.base import ChatResponse, Message, ToolCall
-from benchmarks.harness import run_task, run_suite, report_markdown
+from benchmarks.harness import report_markdown, run_suite, run_task
 from benchmarks.suite import TASKS
+from boundary.clients.base import ChatResponse, Message, ToolCall
 
 
 class ScriptedClient:

@@ -35,7 +35,7 @@ class TaintStore:
         self.tainted_files = tainted_files
 
     @classmethod
-    def load(cls, workspace_root: str | Path) -> "TaintStore":
+    def load(cls, workspace_root: str | Path) -> TaintStore:
         root = Path(workspace_root).expanduser().resolve()
         ledger = _ledger_root() / f"{_workspace_hash(root)}.json"
         sources: list[str] = []

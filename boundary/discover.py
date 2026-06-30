@@ -15,10 +15,9 @@ Dry-run is the default: discover lists work, it does not act. Pass a dispatch_fn
 """
 from __future__ import annotations
 
-import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 DEFAULT_MARKER = "BOUNDARY-TASK:"
 _SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".boundary"}

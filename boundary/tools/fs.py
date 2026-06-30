@@ -1,6 +1,4 @@
 from __future__ import annotations
-import fnmatch
-from pathlib import Path
 
 from boundary.tools.registry import ToolRegistry
 from boundary.tools.workspace import Workspace

@@ -6,8 +6,6 @@ action wrapping, install + uninstall flow, and list_installed enumeration.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
-from unittest import mock
 
 import pytest
 

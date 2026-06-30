@@ -15,7 +15,6 @@ human (or the next loop run) reads first.
 from __future__ import annotations
 
 import datetime as _dt
-import json as _json
 from pathlib import Path
 
 from boundary.history import History

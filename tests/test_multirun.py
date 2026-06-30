@@ -7,11 +7,16 @@ from types import SimpleNamespace
 from boundary.agent import Agent
 from boundary.envelope import Envelope
 from boundary.history import History
-from boundary.transcript import Transcript
 from boundary.multirun import (
-    Candidate, template_run_paths, gate_survivors, stub_select,
-    promote_winner, run_best_of_k, record_best_of_k,
+    Candidate,
+    gate_survivors,
+    promote_winner,
+    record_best_of_k,
+    run_best_of_k,
+    stub_select,
+    template_run_paths,
 )
+from boundary.transcript import Transcript
 
 
 def test_template_run_paths_literal_and_glob():

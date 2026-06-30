@@ -8,15 +8,14 @@ Workflow:
     4. grade with the Third Umpire
 """
 from __future__ import annotations
-import json
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Any
 
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from boundary.adapters.clawpilot import load_persona
 from boundary.clients import make_client
 from boundary.clients.base import Message
 from boundary.envelope import Envelope, EnvelopeRunner
-from boundary.adapters.clawpilot import load_persona
 
 FIELDING_COACH_SYSTEM = """You are Fielding Coach. Your job is to translate a
 loose user request into a TIGHT envelope spec that an agent will run inside.
@@ -103,8 +102,8 @@ class EnvelopeProposal:
 
     def to_markdown(self) -> str:
         lines = [
-            f"# Fielding Coach proposal",
-            f"",
+            "# Fielding Coach proposal",
+            "",
             f"**Restated intent:** {self.restated_intent}",
             f"**Persona:** {self.persona}",
             f"**Writable paths:** `{self.writable_paths}`",
@@ -112,7 +111,7 @@ class EnvelopeProposal:
             f"**Rationale:** {self.rationale}",
         ]
         if self.clarifying_questions:
-            lines.append(f"\n**Clarifying questions (BLOCKING):**")
+            lines.append("\n**Clarifying questions (BLOCKING):**")
             for q in self.clarifying_questions:
                 lines.append(f"- {q}")
         lines.append(f"\n**Task (tightened):**\n\n{self.task}")
@@ -235,10 +234,10 @@ def dispatch_best_of_k(
     """Best-of-K variant of dispatch: fan the proposal out K times and select a
     winner. Mirrors dispatch() but routes through boundary.multirun.run_best_of_k.
     """
-    from boundary.multirun import run_best_of_k
     from boundary.clients import make_client
-    from boundary.transcript import Transcript
     from boundary.history import History
+    from boundary.multirun import run_best_of_k
+    from boundary.transcript import Transcript
 
     workspace = Path(workspace).expanduser()
     squad = Path(squad_dir).expanduser() if squad_dir else (workspace / ".squad" / "agents")

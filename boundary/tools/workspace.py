@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -18,8 +19,8 @@ class Workspace:
             resolved = (self.root / p).resolve()
         try:
             resolved.relative_to(self.root)
-        except ValueError:
+        except ValueError as e:
             raise PermissionError(
                 f"path {resolved} escapes workspace {self.root}"
-            )
+            ) from e
         return resolved

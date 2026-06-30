@@ -13,7 +13,6 @@ caller (headless) persists the returned NewTasks via History.add_task.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -25,7 +24,7 @@ class TriggerRule:
     max_emit: int = 10            # cap tasks emitted per rule per run
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TriggerRule":
+    def from_dict(cls, d: dict) -> TriggerRule:
         # YAML 1.1 parses a bare `on:` key as the boolean True (likewise off/yes/no).
         # Accept that gracefully so `on: discovery` works unquoted in schedule YAML.
         on = d.get("on", d.get(True, d.get(False)))
@@ -70,7 +69,8 @@ def _matches(rule: TriggerRule, outcome: RunOutcome) -> bool:
 def evaluate_triggers(rules: list[TriggerRule], outcome: RunOutcome) -> list[NewTask]:
     """Pure: match rules against a run outcome, return tasks to enqueue."""
     emitted: list[NewTask] = []
-    label = lambda r: f"{r.on}:{r.when or '*'}->{r.action}"
+    def label(r):
+        return f"{r.on}:{r.when or '*'}->{r.action}"
     for rule in rules:
         if not _matches(rule, outcome):
             continue

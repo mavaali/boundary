@@ -1,10 +1,10 @@
 """Run history — SQLite ledger of every headless run + Third Umpire verdict."""
 from __future__ import annotations
+
 import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
 
 DEFAULT_DB = Path.home() / ".boundary" / "history.db"
 
@@ -142,21 +142,21 @@ class History:
             rows = self._conn.execute(
                 "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
         cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def runs_for_workspace(self, workspace: str, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM runs WHERE workspace=? ORDER BY started_at DESC LIMIT ?",
             (workspace, limit)).fetchall()
         cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def list_open_reviews(self, limit: int = 50) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM review_queue WHERE resolved=0 ORDER BY queued_at DESC LIMIT ?",
             (limit,)).fetchall()
         cols = [c[0] for c in self._conn.execute("SELECT * FROM review_queue LIMIT 0").description]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def resolve_review(self, review_id: int, resolution: str) -> None:
         self._conn.execute(
@@ -188,7 +188,7 @@ class History:
                 "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC LIMIT ?",
                 (limit,)).fetchall()
         cols = [c[0] for c in self._conn.execute("SELECT * FROM tasks LIMIT 0").description]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def set_task_status(self, task_id: int, status: str) -> None:
         self._conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))

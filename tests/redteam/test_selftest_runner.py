@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from boundary import selftest
-from boundary.selftest import run_selftest, SelftestResult
+from boundary.selftest import SelftestResult, run_selftest
 
 
 def test_run_selftest_zero_when_guarantees_hold():

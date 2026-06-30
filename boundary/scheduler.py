@@ -17,8 +17,10 @@ if sys.platform == "darwin":
         install,
         install_pipeline,
         list_installed,
-        plist_path_for as _plist_path_for,
         uninstall,
+    )
+    from boundary.launchd import (
+        plist_path_for as _plist_path_for,
     )
 
     BACKEND = "launchd"

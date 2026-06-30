@@ -86,6 +86,27 @@ include = ["boundary*"]
     "examples/workspaces/sample-repo/scratch/.gitkeep",
 ]
 
+[tool.ruff]
+# Security tooling: a standing lint gate guards against the subtle slips that
+# matter most here. Target the minimum supported runtime.
+target-version = "py310"
+line-length = 100
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+# E/F = pyflakes+pycodestyle, I = import order, B = bugbear (catches e.g. bare
+# except, mutable defaults), UP = pyupgrade. Pragmatic, not maximal.
+select = ["E", "F", "I", "B", "UP"]
+# E501 (line length) is advisory here — many docstrings/denylist comments are
+# intentionally long. The formatter, not the linter, owns wrapping.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use compact conventions the package code shouldn't: semicolon imports
+# (E702), `assert False` fixtures (B011), throwaway locals (F841), and the odd
+# short name (E741). The package itself is held to the full rule set.
+"tests/**" = ["E402", "E702", "B011", "F841", "E741"]
+
 [tool.pytest.ini_options]
 # Put the repo root on sys.path so tests can import the top-level `benchmarks`
 # package (not shipped in the wheel, so strict PEP 660 editable installs don't
