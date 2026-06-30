@@ -1,6 +1,8 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Literal
 
 ToolKind = Literal["read", "write", "external", "commit"]
 

@@ -1,5 +1,6 @@
 """Prompt-file adapter — load a persona charter or prompt file as an agent."""
 from __future__ import annotations
+
 from pathlib import Path
 
 from boundary.agent import Agent

@@ -1,8 +1,7 @@
 import time
-from pathlib import Path
 
 from boundary.history import History
-from boundary.state import render_state, write_state, STATE_FILENAME
+from boundary.state import STATE_FILENAME, render_state, write_state
 
 
 def _hist(tmp_path) -> History:

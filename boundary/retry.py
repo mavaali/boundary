@@ -12,10 +12,12 @@ without a live model.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable
+from typing import Any
 
-from boundary.fielding_coach import EnvelopeProposal, dispatch as _default_dispatch
+from boundary.fielding_coach import EnvelopeProposal
+from boundary.fielding_coach import dispatch as _default_dispatch
 from boundary.third_umpire import ThirdUmpire, ThirdUmpireReport
 
 

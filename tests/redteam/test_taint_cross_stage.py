@@ -6,7 +6,6 @@ and attempts a write/commit. Without the persisted ledger, taint would reset
 between runs; with it, the taint must carry across.
 """
 from __future__ import annotations
-import json
 
 from boundary.agent import Agent
 from boundary.envelope import Envelope, EnvelopeRunner

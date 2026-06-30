@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from boundary.schedule import ScheduleConfig
 from boundary.fielding_coach import EnvelopeProposal, dispatch_best_of_k
+from boundary.schedule import ScheduleConfig
 
 
 def test_schedule_parses_best_of_k_fields(tmp_path):

@@ -1,10 +1,9 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import yaml
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -19,7 +18,7 @@ class Overlay:
     roles: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, name_or_path: str) -> "Overlay":
+    def load(cls, name_or_path: str) -> Overlay:
         path = _resolve_overlay_path(name_or_path)
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         roles = {

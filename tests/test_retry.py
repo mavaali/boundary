@@ -1,8 +1,7 @@
-from dataclasses import dataclass, field
 
 from boundary.fielding_coach import EnvelopeProposal
-from boundary.retry import tighten, dispatch_with_retry, RetryResult
-from boundary.third_umpire import ThirdUmpireReport, CheckResult
+from boundary.retry import dispatch_with_retry, tighten
+from boundary.third_umpire import CheckResult, ThirdUmpireReport
 
 
 def _prop():

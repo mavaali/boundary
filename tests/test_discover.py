@@ -1,4 +1,4 @@
-from boundary.discover import scan_markers, discover, run_discovery, DiscoveredTask
+from boundary.discover import discover, run_discovery, scan_markers
 
 
 def _ws(tmp_path):

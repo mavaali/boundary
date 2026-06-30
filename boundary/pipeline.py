@@ -16,7 +16,6 @@ from boundary.history import History
 from boundary.schedule import ScheduleConfig
 from boundary.third_umpire import ThirdUmpire
 
-
 PipelineStopPolicy = Literal["fail", "warn_fail", "never"]
 
 SQUAD_PLANNER_SYSTEM = """You are Boundary's Squad Planner.
@@ -55,7 +54,7 @@ class SquadPlanningConfig:
     on_ambiguity: str = "queue"
     on_commit: str = "refuse"
     on_taint: str = "warn"
-    sandbox_driver: str = "seatbelt"
+    sandbox_driver: str = "auto"
     egress_allowlist: list[str] = field(default_factory=list)
     commit_allowlist: list[str] = field(default_factory=list)
     model: str | None = None
@@ -102,7 +101,7 @@ class PipelineConfig:
     planning: SquadPlanningConfig = field(default_factory=SquadPlanningConfig)
 
     @classmethod
-    def load(cls, path: str | Path) -> "PipelineConfig":
+    def load(cls, path: str | Path) -> PipelineConfig:
         data = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8"))
         defaults = dict(data.get("defaults", {}) or {})
         steps = [_load_step(raw) for raw in data.get("steps", [])]
@@ -147,7 +146,7 @@ class PipelineConfig:
             on_ambiguity=step.on_ambiguity or self.defaults.get("on_ambiguity", "queue"),
             on_commit=step.on_commit or self.defaults.get("on_commit", "refuse"),
             on_taint=step.on_taint or self.defaults.get("on_taint", "warn"),
-            sandbox_driver=step.sandbox_driver or self.defaults.get("sandbox_driver", "seatbelt"),
+            sandbox_driver=step.sandbox_driver or self.defaults.get("sandbox_driver", "auto"),
             egress_allowlist=step.egress_allowlist or list(self.defaults.get("egress_allow", []) or []),
             commit_allowlist=step.commit_allowlist or list(self.defaults.get("commit_allowlist", []) or []),
             client=self.client,
@@ -160,6 +159,15 @@ class PipelineConfig:
         errors: list[str] = []
         if self.stop_on not in ("fail", "warn_fail", "never"):
             errors.append(f"stop_on must be one of fail|warn_fail|never, got {self.stop_on!r}")
+        # Step names key the schedule-config name, run logs, history, and output
+        # isolation — duplicates silently merge two steps' identities.
+        names = [s.name for s in self.steps]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            errors.append(
+                f"duplicate step name(s): {dupes} — step names must be unique "
+                f"(they key run logs, history, and the per-step schedule config)"
+            )
         if self.planning.enabled:
             try:
                 _workspace_path(
@@ -389,7 +397,7 @@ def _load_planning(raw: Any) -> SquadPlanningConfig:
         on_ambiguity=raw.get("on_ambiguity", "queue"),
         on_commit=raw.get("on_commit", "refuse"),
         on_taint=raw.get("on_taint", "warn"),
-        sandbox_driver=raw.get("sandbox_driver", "seatbelt"),
+        sandbox_driver=raw.get("sandbox_driver", "auto"),
         egress_allowlist=list(raw.get("egress_allow", []) or []),
         commit_allowlist=list(raw.get("commit_allowlist", []) or []),
         model=raw.get("model"),

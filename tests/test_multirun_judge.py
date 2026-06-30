@@ -7,10 +7,14 @@ from types import SimpleNamespace
 from boundary.agent import Agent
 from boundary.envelope import Envelope
 from boundary.history import History
-from boundary.transcript import Transcript
 from boundary.multirun import (
-    Candidate, JudgeVerdict, judge_candidates, resolve_selection, run_best_of_k,
+    Candidate,
+    JudgeVerdict,
+    judge_candidates,
+    resolve_selection,
+    run_best_of_k,
 )
+from boundary.transcript import Transcript
 
 
 class _JudgeClient:

@@ -1,8 +1,10 @@
-from pathlib import Path
 
 from boundary.discover import discover
 from boundary.sources_fabricspecs import (
-    scan_fabricspecs_questions, _parse_frontmatter, _open_questions_block, _extract_open,
+    _extract_open,
+    _open_questions_block,
+    _parse_frontmatter,
+    scan_fabricspecs_questions,
 )
 
 SPEC = """---

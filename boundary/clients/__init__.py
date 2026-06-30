@@ -1,4 +1,4 @@
-from boundary.clients.base import ModelClient, Message, ToolCall, ChatResponse
+from boundary.clients.base import ChatResponse, Message, ModelClient, ToolCall
 
 __all__ = ["ModelClient", "Message", "ToolCall", "ChatResponse"]
 

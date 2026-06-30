@@ -9,7 +9,7 @@ import shutil
 
 import pytest
 
-from boundary.selftest import check_egress_blocked_empty_allowlist, check_denylist_bypass_blocked
+from boundary.selftest import check_denylist_bypass_blocked, check_egress_blocked_empty_allowlist
 
 SRT_AVAILABLE = shutil.which("srt") is not None
 pytestmark = pytest.mark.skipif(not SRT_AVAILABLE, reason="srt required")

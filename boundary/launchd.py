@@ -4,6 +4,7 @@ Produces user-level LaunchAgents in ~/Library/LaunchAgents/. These run as the
 user and survive reboot (loaded via launchctl bootstrap).
 """
 from __future__ import annotations
+
 import os
 import plistlib
 import shutil

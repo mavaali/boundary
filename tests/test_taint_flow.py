@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from boundary.envelope import Envelope, EnvelopeEvent, _make_enforced_tool
+from boundary.tools.fs import register_fs_tools
 from boundary.tools.registry import Tool, ToolRegistry
 from boundary.tools.workspace import Workspace
-from boundary.tools.fs import register_fs_tools
 
 
 def _fetch_tool() -> Tool:

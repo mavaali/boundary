@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from boundary.discover import DiscoveredTask, SOURCES
+from boundary.discover import SOURCES, DiscoveredTask
 
 # Hard excludes: generated/agent output and non-spec scaffolding.
 _EXCL = re.compile(

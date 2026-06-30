@@ -12,20 +12,18 @@ Usage:
     result = runner.run(task)
 """
 from __future__ import annotations
+
 import fnmatch
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
-from boundary.loop import LoopResult, run_loop
+from boundary.loop import LoopResult
 from boundary.taint import TaintStore
 from boundary.tools.registry import Tool, ToolRegistry
-
 
 # -----------------------------------------------------------------------------
 # COMMIT-TOOL KILL-LIST
@@ -304,7 +302,9 @@ def _make_enforced_tool(
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
     store=None,                         # TaintStore | None
-    sandbox_driver: str = "seatbelt",
+    sandbox_driver: str = "auto",       # resolved concrete driver from the Agent;
+                                        # any non-"srt" value taints bash (egress
+                                        # not OS-bounded) — the safe default.
     egress_allowlist: list[str] | None = None,
 ) -> Tool:
     """Wrap a tool so it consults the envelope before executing."""
@@ -533,7 +533,7 @@ def _make_enforced_tool(
                 counters["commit_executed"] = counters.get("commit_executed", 0) + 1
                 if base.name == "bash_commit":
                     counters["writes_executed"] = counters.get("writes_executed", 0) + 1
-                events.append(EnvelopeEvent("commit_allowed", base.name, f"policy=allow", i))
+                events.append(EnvelopeEvent("commit_allowed", base.name, "policy=allow", i))
                 return result
             # Not allowed by policy.
             if policy == "queue":
@@ -754,7 +754,7 @@ class EnvelopeRunner:
         new_reg = ToolRegistry()
         counters: dict[str, int] = {}
         store = TaintStore.load(self.agent.workspace.root)
-        for name, tool in self.agent.tools._tools.items():
+        for tool in self.agent.tools._tools.values():
             new_reg.register(_make_enforced_tool(
                 tool, self.envelope, counters, events, iter_ref,
                 halt_flag=halt_flag, commit_halt_flag=commit_halt_flag,
@@ -804,8 +804,9 @@ class EnvelopeRunner:
             )
 
         # Run loop with halt hook + budget-pressure injections + spend/wall caps
-        import time as _time
         import json as _json
+        import time as _time
+
         from boundary.clients.base import ChatResponse
         tool_schemas = enforced.schemas()
         max_iters = self.agent.max_iters

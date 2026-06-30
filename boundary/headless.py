@@ -1,5 +1,6 @@
 """Headless runner — executes a ScheduleConfig with no human in the loop."""
 from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -9,9 +10,9 @@ from pathlib import Path
 
 from boundary.adapters.clawpilot import load_persona
 from boundary.envelope import Envelope, EnvelopeRunner
-from boundary.third_umpire import ThirdUmpire
 from boundary.history import History
 from boundary.schedule import ScheduleConfig
+from boundary.third_umpire import ThirdUmpire
 
 LOCK_DIR = Path("~/.boundary/locks").expanduser()
 EVENT_PENDING_DIR = Path("~/.boundary/events/pending").expanduser()
@@ -298,8 +299,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         )
         if config.runs and config.runs > 1:
             # Best-of-K, headless: fan out K runs, never block on close calls.
-            from boundary.multirun import run_best_of_k
             from boundary.clients import make_client
+            from boundary.multirun import run_best_of_k
             from boundary.transcript import Transcript as _Transcript
             agent.close()  # discard the single pre-built agent; the factory builds its own
 
@@ -415,7 +416,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     # (human-gated — never auto-dispatched).
     enqueued_task_ids: list = []
     if getattr(config, "triggers", None):
-        from boundary.triggers import load_rules, evaluate_triggers, RunOutcome
+        from boundary.triggers import RunOutcome, evaluate_triggers, load_rules
         outcome = RunOutcome(
             verdict=third_umpire_verdict, discovered=discovered_tasks,
             error=error_text, schedule_name=config.name,

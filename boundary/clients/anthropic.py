@@ -1,10 +1,11 @@
 from __future__ import annotations
-import json
+
 import os
 from typing import Any
 
 import httpx
 
+from boundary.clients._http import request_with_retry
 from boundary.clients.base import ChatResponse, Message, ModelClient, ToolCall
 
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
@@ -82,7 +83,7 @@ class AnthropicClient(ModelClient):
         for k in ("temperature", "top_p"):
             if k in kwargs:
                 payload[k] = kwargs[k]
-        r = httpx.post(
+        r = request_with_retry(lambda: httpx.post(
             ANTHROPIC_API,
             headers={
                 "x-api-key": self.api_key,
@@ -91,7 +92,7 @@ class AnthropicClient(ModelClient):
             },
             json=payload,
             timeout=self.timeout,
-        )
+        ))
         if r.status_code >= 400:
             raise RuntimeError(f"anthropic api {r.status_code}: {r.text[:500]}")
         data = r.json()

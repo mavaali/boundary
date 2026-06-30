@@ -9,6 +9,7 @@ Usage:
     print(report.markdown())
 """
 from __future__ import annotations
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -184,7 +185,7 @@ class ThirdUmpire:
             report.checks.append(CheckResult(
                 "ambiguity_handling",
                 passed=True,
-                detail=(f"agent called ask_human" if called_ask_human else "no interpolation phrases detected"),
+                detail=("agent called ask_human" if called_ask_human else "no interpolation phrases detected"),
                 severity="warn",
             ))
 

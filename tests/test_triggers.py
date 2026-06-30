@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 
-from boundary.triggers import (
-    TriggerRule, NewTask, RunOutcome, evaluate_triggers, load_rules,
-)
 from boundary.history import History
+from boundary.triggers import (
+    RunOutcome,
+    TriggerRule,
+    evaluate_triggers,
+    load_rules,
+)
 
 
 @dataclass

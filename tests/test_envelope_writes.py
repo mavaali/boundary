@@ -9,13 +9,14 @@ Covers:
 - max_writes refusal returns without executing the underlying fn
 """
 from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
 
-from boundary.envelope import Envelope, _make_enforced_tool, _stage_proposal_tool, EnvelopeEvent
-from boundary.tools.registry import Tool, ToolRegistry
+from boundary.envelope import Envelope, EnvelopeEvent, _make_enforced_tool, _stage_proposal_tool
 from boundary.tools.fs import register_fs_tools
+from boundary.tools.registry import ToolRegistry
 from boundary.tools.workspace import Workspace
 
 

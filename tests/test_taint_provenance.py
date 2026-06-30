@@ -1,11 +1,10 @@
-from pathlib import Path
 
 from boundary.agent import Agent
-from boundary.envelope import Envelope, EnvelopeEvent, EnvelopeRunner, _make_enforced_tool
+from boundary.envelope import Envelope, EnvelopeRunner, _make_enforced_tool
 from boundary.taint import TaintStore
+from boundary.tools.fs import register_fs_tools
 from boundary.tools.registry import Tool, ToolRegistry
 from boundary.tools.workspace import Workspace
-from boundary.tools.fs import register_fs_tools
 
 
 def test_agent_retains_driver_and_egress():

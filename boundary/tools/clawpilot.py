@@ -7,6 +7,7 @@ live on disk or be callable via a CLI:
   - the workiq CLI (~/.copilot/bin/workiq) for M365 queries
 """
 from __future__ import annotations
+
 import subprocess
 from pathlib import Path
 

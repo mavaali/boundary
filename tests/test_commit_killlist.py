@@ -16,6 +16,7 @@ Covers:
 - BASH_COMMIT_DENYLIST hard cap at 12 (guardrail test)
 """
 from __future__ import annotations
+
 import platform
 import shutil
 from pathlib import Path
@@ -23,17 +24,17 @@ from pathlib import Path
 import pytest
 
 from boundary.envelope import (
+    _GIT_COMMIT_SUBCOMMANDS,
+    BASH_COMMIT_DENYLIST,
     Envelope,
     EnvelopeEvent,
-    _make_enforced_tool,
     _bash_command_is_commit,
-    BASH_COMMIT_DENYLIST,
-    _GIT_COMMIT_SUBCOMMANDS,
+    _make_enforced_tool,
 )
-from boundary.tools.registry import Tool, ToolRegistry
-from boundary.tools.workspace import Workspace
-from boundary.tools.shell import register_shell_tools
 from boundary.schedule import ScheduleConfig
+from boundary.tools.registry import Tool, ToolRegistry
+from boundary.tools.shell import register_shell_tools
+from boundary.tools.workspace import Workspace
 
 SANDBOX_AVAILABLE = platform.system() == "Darwin" and shutil.which("sandbox-exec") is not None
 
@@ -49,7 +50,7 @@ def _commit_tool(name: str = "send_email", side_effect_record: list | None = Non
 
     return Tool(
         name=name,
-        description=f"COMMIT tool — send email to {{to}} with {{body}}",
+        description="COMMIT tool — send email to {to} with {body}",
         parameters={
             "type": "object",
             "properties": {
