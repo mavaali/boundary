@@ -20,10 +20,10 @@ temperature schedule); the orchestrator itself is sampling-agnostic.
 from __future__ import annotations
 
 import shutil
-import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any
 
 from boundary.agent import Agent
 from boundary.envelope import Envelope, EnvelopeRunner, EnvelopeRunResult
@@ -49,7 +49,7 @@ class BestOfKResult:
     winner: Candidate | None
     promoted: list[str]
     selection_reason: str
-    judge: "JudgeVerdict | None" = None
+    judge: JudgeVerdict | None = None
     escalation: str = "none"          # none | ratify | advisory | advisory_defer
     review_id: int | None = None
 
@@ -84,6 +84,40 @@ def template_run_paths(writable_paths: list[str], k: int) -> dict[str, str]:
         run_p = str(pp.with_name(f"{pp.stem}-run{k}{pp.suffix}"))
         mapping[run_p] = p
     return mapping
+
+
+def validate_run_path_isolation(writable_paths: list[str], k: int) -> list[str]:
+    """Return reasons the K runs cannot be isolated to distinct output paths.
+
+    Best-of-K only works if each run writes somewhere the others don't; otherwise
+    run K silently clobbers run K-1 and the judge compares one survivor against
+    itself. `template_run_paths` leaves glob paths unchanged, so a glob writable
+    path maps to the same target for every run — the headline collision. We also
+    guard the (rare) case where two literal paths template to the same run path.
+    """
+    problems: list[str] = []
+    if k <= 1 or not writable_paths:
+        return problems
+    for p in writable_paths:
+        if "*" in p:
+            problems.append(
+                f"writable path {p!r} contains a glob and cannot be isolated across "
+                f"{k} runs — every run would write the same target and clobber the "
+                f"others. Best-of-K needs literal paths (one artifact per run)."
+            )
+    seen: dict[str, int] = {}
+    for run in range(1, k + 1):
+        for run_p in template_run_paths(writable_paths, run):
+            if "*" in run_p:
+                continue  # already reported above
+            if run_p in seen and seen[run_p] != run:
+                problems.append(
+                    f"templated path {run_p!r} collides between run{seen[run_p]} and "
+                    f"run{run} — choose writable paths that don't alias once suffixed."
+                )
+            else:
+                seen[run_p] = run
+    return problems
 
 
 def _unproductive(candidate: Candidate) -> int:
@@ -257,7 +291,7 @@ def resolve_selection(verdict: JudgeVerdict, *, mode: str, margin_threshold: flo
     return Resolution(top, True, "advisory", f"{why}; headless → auto-pick run{top} + advisory flag")
 
 
-def _queue_selection_review(history, *, escalation: str, result: "BestOfKResult") -> int | None:
+def _queue_selection_review(history, *, escalation: str, result: BestOfKResult) -> int | None:
     """T7: park a best-of-K selection decision in the review-queue.
 
     Two kinds, both via the existing queue schema (no migration):
@@ -311,6 +345,11 @@ def run_best_of_k(
     `select_margin` / `headless_fallback` drive a mode-aware, non-blocking-for-
     headless resolution, with close calls parked in `history`'s review-queue.
     """
+    isolation_problems = validate_run_path_isolation(base_envelope.writable_paths, k)
+    if isolation_problems:
+        raise ValueError(
+            "best-of-K run paths cannot be isolated:\n- " + "\n- ".join(isolation_problems)
+        )
     root = Path(workspace_root)
     candidates: list[Candidate] = []
     for run in range(1, k + 1):
