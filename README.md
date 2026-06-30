@@ -35,12 +35,18 @@ extra system guidance without changing the generic engine.
 Boundary enforces a workspace write boundary and envelope write allowlist via a
 pluggable sandbox driver (`--sandbox-driver`):
 
-- `seatbelt` (default) — macOS write-jail; blocks local writes outside the
+- `auto` (default) — prefer the strongest sandbox available: `srt` if installed
+  (OS-enforced egress), otherwise fall back to `seatbelt` on macOS **with a loud
+  warning that egress is uncontained**, and refuse outright where neither is
+  available rather than silently dropping the jail. The secure path is the
+  default, not opt-in.
+- `seatbelt` — macOS write-jail; blocks local writes outside the
   workspace, but **does not bound network egress** and reads are unrestricted.
 - `srt` — [Anthropic sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
   (Seatbelt/bubblewrap/WFP) adds an **OS-enforced network egress allowlist** over
   the whole process tree. Set `--egress-allow <domain>` (empty = no network);
-  needs `npm i -g @anthropic-ai/sandbox-runtime`.
+  needs `npm i -g @anthropic-ai/sandbox-runtime`. Requesting `srt` explicitly is
+  strict — it fails loudly if srt is absent rather than degrading.
 - `none` — no sandbox.
 
 For sensitive work, prefer `--sandbox-driver srt` with a tight egress allowlist

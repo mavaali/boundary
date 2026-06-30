@@ -8,6 +8,35 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Changed
+- **Secure-by-default sandbox: new `auto` driver is now the default** (`agent`,
+  `schedule`, `pipeline`, `boundary run --sandbox-driver`). `auto` prefers `srt`
+  (OS-enforced egress) when installed, falls back to `seatbelt` on macOS with a
+  LOUD stderr warning that egress is uncontained, and refuses where neither is
+  available rather than silently dropping the jail. Explicit `--sandbox-driver
+  srt` stays strict (hard-fails if srt is absent). The `Agent` resolves `auto` to
+  a concrete driver at construction, so the transcript and the Third Umpire's
+  `egress_uncontained` check see the driver that actually ran.
+
+### Added
+- **Transient-failure retry for the Anthropic and Copilot clients** — a shared
+  `boundary/clients/_http.py:request_with_retry` wraps each HTTP call with bounded
+  exponential backoff over retryable statuses (408/429/5xx/529) and transport
+  timeouts/connection errors; a persistent error is still surfaced, never masked.
+  (OpenRouter kept its existing bespoke retry.)
+- **Path-collision guards** — best-of-K now refuses to run when writable paths
+  can't be isolated across runs (e.g. a glob target every run would clobber:
+  `multirun.validate_run_path_isolation`), and pipeline `validate()` flags
+  duplicate step names.
+- **Symlink-escape red-team guarantee** — `selftest.check_symlink_escape_refused`
+  (and `tests/redteam/test_symlink_escape.py`) assert a workspace-internal symlink
+  pointing outside the jail can't become a read or write escape, including the
+  sharp case where the symlink's name is on the writable allowlist.
+
+### Tooling
+- Added a `ruff` lint gate (E/F/I/B/UP) over the package; package and tests are
+  lint-clean.
+
 ## [0.7.0] - 2026-06-25
 
 ComPilot incorporation — lessons from *Agentic Auto-Scheduling: An Experimental

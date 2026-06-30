@@ -18,10 +18,51 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 from pathlib import Path
 
-SANDBOX_DRIVERS = ("seatbelt", "srt", "none")
+# "auto" (the default) prefers the strongest sandbox available: srt's OS-enforced
+# egress containment if installed, else macOS seatbelt's write-jail with a LOUD
+# warning that egress is uncontained, else a hard error (never silently drop the
+# jail). Explicit "srt" stays strict — a deliberate security choice fails loudly
+# rather than degrading.
+SANDBOX_DRIVERS = ("auto", "seatbelt", "srt", "none")
+
+_AUTO_WARNED = False
+_AUTO_WARNED_LOCK = threading.Lock()
+
+
+def warn_once(message: str) -> None:
+    """Emit `message` to stderr exactly once per process, even under concurrent
+    runs (batch best-of-K, multi-threaded scheduling)."""
+    global _AUTO_WARNED
+    with _AUTO_WARNED_LOCK:
+        if _AUTO_WARNED:
+            return
+        _AUTO_WARNED = True
+    print(message, file=sys.stderr, flush=True)
+
+
+def resolve_auto_driver() -> tuple[str | None, str | None]:
+    """Resolve the 'auto' driver to a concrete one.
+
+    Returns (driver, warning). driver is None when no sandbox is available (the
+    caller turns that into an error). Prefers srt (egress contained); falls back
+    to seatbelt on macOS (write-jail only — egress UNCONTAINED, hence the warning);
+    refuses otherwise rather than running with no boundary.
+    """
+    if shutil.which("srt"):
+        return "srt", None
+    if platform.system() == "Darwin":
+        return "seatbelt", (
+            "[boundary] WARNING: sandbox driver 'auto' fell back to 'seatbelt' — srt "
+            "is not installed, so network egress is NOT contained (exfiltration via "
+            "bash is possible). For OS-enforced egress, install: "
+            "npm i -g @anthropic-ai/sandbox-runtime, then use --sandbox-driver srt."
+        )
+    return None, None
 
 
 def _jail_env(workspace_root: Path) -> dict:
@@ -52,10 +93,22 @@ def run_sandboxed(
     *,
     workspace_root: Path,
     timeout: int,
-    driver: str = "seatbelt",
+    driver: str = "auto",
     egress_allowlist: list[str] | None = None,
 ) -> str:
     root = Path(workspace_root).resolve()
+    if driver == "auto":
+        resolved, warning = resolve_auto_driver()
+        if warning:
+            warn_once(warning)
+        if resolved is None:
+            return (
+                "ERROR: no OS sandbox available — srt is not installed and seatbelt "
+                "is macOS-only. Install srt (`npm i -g @anthropic-ai/sandbox-runtime`) "
+                "for an egress-bounded jail, or pass --sandbox-driver none to run "
+                "without any jail explicitly."
+            )
+        driver = resolved
     if driver == "seatbelt":
         return _run_seatbelt(command, root, timeout)
     if driver == "srt":

@@ -302,7 +302,9 @@ def _make_enforced_tool(
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
     store=None,                         # TaintStore | None
-    sandbox_driver: str = "seatbelt",
+    sandbox_driver: str = "auto",       # resolved concrete driver from the Agent;
+                                        # any non-"srt" value taints bash (egress
+                                        # not OS-bounded) — the safe default.
     egress_allowlist: list[str] | None = None,
 ) -> Tool:
     """Wrap a tool so it consults the envelope before executing."""

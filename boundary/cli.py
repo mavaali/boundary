@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rq = sub.add_parser("review-queue", help="show ambiguity halts waiting for human input")
     rq_sub = rq.add_subparsers(dest="rq_cmd")
-    rq_list = rq_sub.add_parser("list", help="list open review items (default)")
+    rq_sub.add_parser("list", help="list open review items (default)")
     rq_resolve = rq_sub.add_parser("resolve")
     rq_resolve.add_argument("id", type=int)
     rq_resolve.add_argument("resolution", help="free-text resolution note")
@@ -203,8 +204,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-iters", type=int, default=25)
     run.add_argument("--no-shell", action="store_true")
     run.add_argument("--no-fs", action="store_true")
-    run.add_argument("--sandbox-driver", choices=["seatbelt", "srt", "none"], default="seatbelt",
-                     help="OS sandbox for the bash tool: seatbelt (macOS write-jail, default), "
+    run.add_argument("--sandbox-driver", choices=["auto", "seatbelt", "srt", "none"], default="auto",
+                     help="OS sandbox for the bash tool: auto (default — prefers srt for "
+                          "OS-enforced egress, falls back to seatbelt with a loud warning if "
+                          "srt is absent), seatbelt (macOS write-jail only), "
                           "srt (cross-platform + egress allowlist; needs `npm i -g @anthropic-ai/sandbox-runtime`), "
                           "or none (no sandbox)")
     run.add_argument("--egress-allow", action="append", default=[],
@@ -326,7 +329,6 @@ def main(argv: list[str] | None = None) -> int:
         print(result.loop_result.final_message.content or "(no content)")
         print(f"\n[envelope: writes={result.writes_executed}/{proposal.max_writes} attempted={result.writes_attempted} appends={result.appends_executed} external={result.external_calls} halted={result.halted_for_ambiguity}]")
         # auto Third Umpire
-        from boundary.third_umpire import ThirdUmpire
         # find latest transcript by mtime
         tx_dir = Path.home() / ".boundary" / "transcripts"
         latest = max(tx_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
@@ -356,8 +358,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.cmd == "schedule":
-        from boundary.schedule import ScheduleConfig, parse_schedule
         from boundary import scheduler as _lc
+        from boundary.schedule import ScheduleConfig, parse_schedule
         if args.schedule_cmd == "install":
             installed = _lc.install(args.path)
             print(f"[ok] installed {installed}")
@@ -398,8 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.cmd == "schedule-run":
-        from boundary.schedule import ScheduleConfig
         from boundary.headless import run_headless
+        from boundary.schedule import ScheduleConfig
         cfg = ScheduleConfig.load(args.path)
         if not cfg.enabled:
             print(f"[skip] {cfg.name} is disabled")
@@ -418,9 +420,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "pipeline":
+        from boundary import scheduler as _lc
         from boundary.pipeline import PipelineConfig
         from boundary.schedule import parse_schedule
-        from boundary import scheduler as _lc
         if args.pipeline_cmd == "install":
             installed = _lc.install_pipeline(args.path)
             print(f"[ok] installed {installed}")
@@ -513,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2 if failed else 0
 
     if args.cmd == "discover":
-        from boundary.discover import discover, run_discovery
+        from boundary.discover import discover
         ws = str(Path(args.workspace).expanduser())
         if args.source == "markers":
             tasks = discover(ws, source=args.source, max_tasks=args.max_tasks, marker=args.marker)
@@ -537,7 +539,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n[dispatch] {t.title}")
             proposal = fc.propose(t.detail, workspace_hint=ws)
             if proposal.clarifying_questions:
-                print("  blocked: clarifying questions — skipping"); continue
+                print("  blocked: clarifying questions — skipping")
+                continue
             if args.retry > 1:
                 dispatch_with_retry(proposal, workspace=ws, max_attempts=args.retry,
                                     client=args.client, model=args.model, on_commit="refuse")
@@ -546,8 +549,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "tasks":
-        from boundary.history import History
         import datetime as _dt
+
+        from boundary.history import History
         h = History()
         cmd = getattr(args, "tasks_cmd", None) or "ready"
         if cmd == "add":
@@ -589,9 +593,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "history":
+        import datetime as _dt
+        import json as _json
+
         from boundary.history import History
         from boundary.third_umpire import downgrade_tags
-        import datetime as _dt, json as _json
         h = History()
         rows = h.list_runs(limit=args.limit, schedule_name=args.schedule)
         if not rows:
@@ -616,8 +622,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "review-queue":
+        import datetime as _dt
+        import json as _json
+
         from boundary.history import History
-        import datetime as _dt, json as _json
         h = History()
         if getattr(args, "rq_cmd", None) == "resolve":
             h.resolve_review(args.id, args.resolution)
@@ -659,10 +667,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_selftest()
 
     if args.cmd == "copilot":
-        from boundary.clients.copilot import (
-            APPS_JSON_PATH, CopilotClient, _load_oauth_token_from_disk, device_code_login,
-        )
         import httpx
+
+        from boundary.clients.copilot import (
+            APPS_JSON_PATH,
+            CopilotClient,
+            _load_oauth_token_from_disk,
+            device_code_login,
+        )
         if args.copilot_cmd == "login":
             device_code_login()
             return 0
@@ -757,11 +769,11 @@ def main(argv: list[str] | None = None) -> int:
             if not args.envelope_writable:
                 print("ERROR: --runs K requires --envelope-writable (best-of-K templates and promotes a path)")
                 return 2
-            from boundary.envelope import Envelope
-            from boundary.multirun import run_best_of_k
             from boundary.clients import make_client
-            from boundary.transcript import Transcript
+            from boundary.envelope import Envelope
             from boundary.history import History
+            from boundary.multirun import run_best_of_k
+            from boundary.transcript import Transcript
             probe = make_agent()
             on_commit, commit_allowlist = _prompt_commit_policy(probe, args.on_commit, args.commit_allow)
             probe.close()

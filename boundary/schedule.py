@@ -1,5 +1,6 @@
 """Schedule config — declarative YAML for headless agent runs."""
 from __future__ import annotations
+
 import datetime as _dt
 import re
 from dataclasses import dataclass, field
@@ -7,7 +8,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-
 
 AmbiguityPolicy = Literal["queue", "fail", "best_effort"]
 FailurePolicy = Literal["digest", "silent", "email"]
@@ -41,7 +41,7 @@ class ScheduleConfig:
     on_commit: CommitPolicy = "refuse"
     commit_allowlist: list[str] = field(default_factory=list)
     on_taint: str = "warn"
-    sandbox_driver: str = "seatbelt"
+    sandbox_driver: str = "auto"
     egress_allowlist: list[str] = field(default_factory=list)
     client: str = "copilot"
     model: str | None = None
@@ -67,7 +67,7 @@ class ScheduleConfig:
     triggers: list = field(default_factory=list)
 
     @classmethod
-    def load(cls, path: str | Path) -> "ScheduleConfig":
+    def load(cls, path: str | Path) -> ScheduleConfig:
         data = yaml.safe_load(Path(path).expanduser().read_text())
         env = data.get("envelope", {})
         return cls(
@@ -90,7 +90,7 @@ class ScheduleConfig:
             on_failure=data.get("on_failure", "digest"),
             on_commit=data.get("on_commit", "refuse"),
             on_taint=data.get("on_taint", "warn"),
-            sandbox_driver=data.get("sandbox_driver", "seatbelt"),
+            sandbox_driver=data.get("sandbox_driver", "auto"),
             egress_allowlist=list(data.get("egress_allow", []) or []),
             commit_allowlist=list(data.get("commit_allowlist", []) or []),
             client=data.get("client", "copilot"),

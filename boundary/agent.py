@@ -1,15 +1,17 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 from boundary.clients import make_client
 from boundary.clients.base import Message, ModelClient
 from boundary.loop import LoopResult, run_loop
-from boundary.tools.registry import ToolRegistry
-from boundary.tools.workspace import Workspace
+from boundary.tools.clawpilot import register_clawpilot_tools
 from boundary.tools.fs import register_fs_tools
+from boundary.tools.registry import ToolRegistry
+from boundary.tools.sandbox import resolve_auto_driver, warn_once
 from boundary.tools.shell import register_shell_tools
 from boundary.tools.web import register_web_tools
-from boundary.tools.clawpilot import register_clawpilot_tools
+from boundary.tools.workspace import Workspace
 from boundary.transcript import Transcript
 
 
@@ -26,7 +28,7 @@ class Agent:
         enable_web: bool = False,
         enable_clawpilot: bool = False,
         shell_timeout: int = 60,
-        sandbox_driver: str = "seatbelt",
+        sandbox_driver: str = "auto",
         egress_allowlist: list[str] | None = None,
         max_iters: int = 25,
         transcript: Transcript | None | bool = True,
@@ -34,6 +36,17 @@ class Agent:
     ):
         self.name = name
         self.system_prompt = system_prompt
+        # Resolve "auto" to a concrete driver up front so the transcript and the
+        # Third Umpire's egress check see the driver that actually ran, not "auto".
+        if sandbox_driver == "auto":
+            resolved, warning = resolve_auto_driver()
+            if warning:
+                warn_once(warning)
+            # resolved is None only when no sandbox exists (e.g. Linux without
+            # srt). Keep "auto" rather than failing construction — an agent with
+            # enable_shell=False is still valid; run_sandboxed surfaces the hard
+            # error if (and only if) bash is actually invoked.
+            sandbox_driver = resolved or "auto"
         self.sandbox_driver = sandbox_driver
         self.egress_allowlist = list(egress_allowlist or [])
         self.workspace = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
