@@ -69,7 +69,9 @@ def test_in_workspace_glob_still_works(tmp_path):
     ws, reg = _fs(tmp_path)
     (ws.root / "a").mkdir()
     (ws.root / "a" / "note.txt").write_text("API_KEY=inside", encoding="utf-8")
-    assert reg.get("glob").fn(pattern="**/*.txt") == "a/note.txt"
+    # normalize the separator so the assertion holds on Windows (relative_to
+    # renders native separators; the tool's output format is unchanged here).
+    assert reg.get("glob").fn(pattern="**/*.txt").replace("\\", "/") == "a/note.txt"
     assert "files_matched=1" in reg.get("grep").fn(pattern="API_KEY", glob="**/*")
 
 
