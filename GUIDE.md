@@ -691,6 +691,9 @@ tainted run under a non-`srt` driver also gets an `egress_uncontained` **fail**.
 | `nudge_on_early_stop` | True | envelope field |
 | `spend_pressure_at` | (0.75, 0.9) | envelope field (`()` disables) |
 | `on_unpriced_model` | `"max_rate"` | envelope field (`"zero"` = legacy) |
+| `degrade_to` / `degrade_at` | None | envelope: `degrade_to: <model>`, `degrade_at: 0.6` |
+| `budget:` (daily/weekly/monthly/rolling) | None | schedule/pipeline YAML block |
+| `attribution:` (tags) | {} | schedule/pipeline YAML block |
 
 ### What things actually cost (Sonnet 4.5)
 
@@ -774,6 +777,49 @@ controls the fallback:
 
 Keep the card current (`token_rates` in `boundary/envelope.py`) so runs price on
 real rates rather than the conservative fallback.
+
+### Degrade-to-cheaper-model
+
+The gradient nudges; degrade *acts*. Once spend crosses `degrade_at` (a fraction
+of the closest-to-breach cap), the run swaps onto `degrade_to` — a cheaper model
+id — for the rest of the run. The expensive model does the early, high-leverage
+reasoning; the cheap one finishes under budget pressure.
+
+```yaml
+envelope:
+  max_dollars: 1.00
+  degrade_to: claude-haiku-4.5
+  degrade_at: 0.6            # swap at 60% of the cap
+```
+
+Fires once, logs a `model_degrade` event, and the banner shows `degraded→<model>`.
+Spend is accounted **per response**, so tokens before the swap are priced at the
+old rate and tokens after at the new one — the recorded `estimated_dollars` is
+correct across the switch. `degrade_to` should be a model present in the rate
+card (otherwise fail-closed pricing prices it conservatively, defeating the
+point). Because cross-run budgets clamp `max_dollars`, degrade composes with them:
+a nearly-spent daily budget makes the clamped cap small, so the run degrades
+almost immediately.
+
+### Cost attribution & tag-scoped budgets
+
+Stamp arbitrary `str→str` tags on every run a schedule/pipeline records, so the
+ledger can be sliced and budgets scoped by project/purpose/tenant:
+
+```yaml
+attribution:
+  tenant: acme
+  project: pricing
+budget:
+  monthly: 50.00
+  scope: "tag:tenant"     # one $50/mo budget PER tenant, summed across workspaces
+```
+
+`scope` is `workspace` (default, this workspace only), `global` (all workspaces),
+or `tag:<key>` / `scope: tag` + `scope_tag: <key>` (per distinct value of that
+tag). Pipelines also auto-stamp `step: <step-name>` so spend can be sliced per
+step. Tags are stored in the `runs.attribution_json` column (older history DBs
+migrate automatically on first open) and surfaced in the run-result dict.
 
 ### No-progress detection & early-stop nudge
 

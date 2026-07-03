@@ -25,14 +25,15 @@ without patching the clock.
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 
 class SpendSource(Protocol):
     """The slice of History that a budget reads. Anything with this method
     (the real History, or a fake in tests) can back a budget check."""
-    def spend_since(self, workspace: str | None, since: float) -> float: ...
+    def spend_since(self, workspace: str | None, since: float,
+                    tag: tuple[str, str | None] | None = None) -> float: ...
 
 
 def _nn(v: object) -> float | None:
@@ -49,25 +50,36 @@ class SpendBudget:
     monthly: float | None = None
     rolling: float | None = None          # $ cap over the trailing window
     rolling_hours: float = 24.0           # length of the rolling window
-    scope: str = "workspace"              # "workspace" | "global"
+    scope: str = "workspace"              # "workspace" | "global" | "tag"
+    scope_tag: str | None = None          # attribution key when scope == "tag"
 
     def is_active(self) -> bool:
         return any(c is not None for c in
                    (self.daily, self.weekly, self.monthly, self.rolling))
 
     @classmethod
-    def from_config(cls, d: dict | None) -> "SpendBudget | None":
-        """Build from a YAML `budget:` block, or None if absent/empty."""
+    def from_config(cls, d: dict | None) -> SpendBudget | None:
+        """Build from a YAML `budget:` block, or None if absent/empty.
+
+        `scope` may be "workspace" (default), "global", or "tag". For "tag",
+        `scope_tag` names the attribution dimension the budget is per-value of
+        (e.g. scope: tag / scope_tag: tenant => one budget per tenant)."""
         if not d:
             return None
+        scope = str(d.get("scope", "workspace"))
         b = cls(
             daily=_nn(d.get("daily")),
             weekly=_nn(d.get("weekly")),
             monthly=_nn(d.get("monthly")),
             rolling=_nn(d.get("rolling")),
             rolling_hours=float(d.get("rolling_hours", 24.0)),
-            scope=str(d.get("scope", "workspace")),
+            scope=scope,
+            scope_tag=d.get("scope_tag") or (d.get("scope").split(":", 1)[1]
+                                             if scope.startswith("tag:") else None),
         )
+        # Normalize the "tag:key" shorthand to scope="tag", scope_tag="key".
+        if scope.startswith("tag:"):
+            b = replace(b, scope="tag")
         return b if b.is_active() else None
 
 
@@ -112,14 +124,25 @@ class BudgetStatus:
 
 
 def evaluate_budget(budget: SpendBudget, source: SpendSource, workspace: str,
-                    now: _dt.datetime | None = None) -> BudgetStatus:
+                    now: _dt.datetime | None = None,
+                    attribution: dict | None = None) -> BudgetStatus:
     """Aggregate prior spend over each active window and report headroom.
 
     `exhausted` is True when any window is already at/over its cap. `remaining`
     is the least headroom across windows (>= 0), which is what a run's per-run
-    max_dollars should be clamped to."""
+    max_dollars should be clamped to. For a tag-scoped budget, `attribution`
+    supplies the current run's tag values so spend is summed per tag value."""
     now = now or _dt.datetime.now()
-    ws = None if budget.scope == "global" else workspace
+    tag: tuple[str, str | None] | None = None
+    if budget.scope == "global":
+        ws = None
+    elif budget.scope == "tag" and budget.scope_tag:
+        # Per-value-of-tag budget: sum across all workspaces sharing this run's
+        # value for the scope tag (e.g. everything tagged tenant=acme).
+        ws = None
+        tag = (budget.scope_tag, (attribution or {}).get(budget.scope_tag))
+    else:
+        ws = workspace
     starts = _window_starts(now)
     specs: list[tuple[str, float, float]] = []
     if budget.daily is not None:
@@ -139,7 +162,7 @@ def evaluate_budget(budget: SpendBudget, source: SpendSource, workspace: str,
     remaining = float("inf")
     binding: str | None = None
     for name, since, cap in specs:
-        spent = source.spend_since(ws, since)
+        spent = source.spend_since(ws, since, tag=tag)
         head = cap - spent
         windows[name] = {"spent": round(spent, 6), "cap": cap,
                          "remaining": round(head, 6), "since": since}

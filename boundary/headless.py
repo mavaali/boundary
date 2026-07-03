@@ -268,10 +268,12 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     # envelope's spend gradient + hard halt keep the run inside the cross-run
     # ceiling. See boundary/budget.py.
     effective_max_dollars = config.max_dollars
+    _attribution = dict(getattr(config, "attribution", {}) or {})
     _budget = getattr(config, "spend_budget", None)
     if _budget is not None and _budget.is_active():
         from boundary.budget import evaluate_budget
-        _bstatus = evaluate_budget(_budget, history, str(config.workspace))
+        _bstatus = evaluate_budget(_budget, history, str(config.workspace),
+                                   attribution=_attribution)
         if _bstatus.exhausted:
             history.close()
             _release_lock(lock_path)
@@ -366,6 +368,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             max_output_tokens=config.max_output_tokens,
             max_dollars=effective_max_dollars,
             max_wall_seconds=config.max_wall_seconds,
+            degrade_to=config.degrade_to,
+            degrade_at=config.degrade_at,
             stop_on_ambiguity=stop_on_ambiguity,
             on_commit=config.on_commit,
             commit_allowlist=list(config.commit_allowlist or []),
@@ -472,7 +476,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         estimated_dollars=estimated_dollars, wall_seconds=wall_seconds,
         third_umpire_verdict=third_umpire_verdict, third_umpire_summary=third_umpire_summary,
         transcript_path=transcript_path, written_files=written_files,
-        error=error_text,
+        error=error_text, attribution=_attribution,
     )
 
     if stop_reason == "ambiguity_halt" and config.on_ambiguity == "queue" and transcript_path:
@@ -529,4 +533,5 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         "event_path": event_path,
         "written_files": written_files, "error": error_text,
         "enqueued_task_ids": enqueued_task_ids,
+        "attribution": _attribution,
     }

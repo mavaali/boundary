@@ -12,7 +12,6 @@ import time
 from boundary.budget import SpendBudget, _window_starts, evaluate_budget
 from boundary.history import History
 
-
 # --- parsing -------------------------------------------------------------
 
 def test_from_config_empty_is_none():
@@ -43,13 +42,24 @@ def test_window_starts_align_to_calendar():
 # --- aggregation with a fake source --------------------------------------
 
 class _FakeSource:
-    """spend_since(workspace, since) over an in-memory list of (ts, ws, dollars)."""
+    """spend_since over an in-memory list of (ts, ws, dollars, tags-dict)."""
     def __init__(self, rows):
-        self.rows = rows
+        # Accept 3- or 4-tuples; missing tags default to {}.
+        self.rows = [(r + ({},))[:4] for r in rows]
 
-    def spend_since(self, workspace, since):
-        return sum(d for ts, ws, d in self.rows
-                   if ts >= since and (workspace is None or ws == workspace))
+    def spend_since(self, workspace, since, tag=None):
+        total = 0.0
+        for ts, ws, d, tags in self.rows:
+            if ts < since:
+                continue
+            if workspace is not None and ws != workspace:
+                continue
+            if tag is not None:
+                key, val = tag
+                if tags.get(key) != val:
+                    continue
+            total += d
+        return total
 
 
 def test_remaining_is_tightest_window():
@@ -86,6 +96,30 @@ def test_scope_workspace_vs_global():
     assert g_st.exhausted
 
 
+def test_tag_scope_sums_per_tag_value():
+    now = _dt.datetime(2026, 7, 3, 12, 0)
+    today = _dt.datetime(2026, 7, 3, 9, 0).timestamp()
+    src = _FakeSource([
+        (today, "/ws-a", 0.7, {"tenant": "acme"}),
+        (today, "/ws-b", 0.9, {"tenant": "acme"}),   # different workspace, same tenant
+        (today, "/ws-a", 5.0, {"tenant": "globex"}),  # other tenant, ignored
+    ])
+    b = SpendBudget(daily=2.0, scope="tag", scope_tag="tenant")
+    # This run is tenant=acme -> sums acme across workspaces = $1.60.
+    st = evaluate_budget(b, src, "/ws-a", now=now, attribution={"tenant": "acme"})
+    assert abs(st.windows["daily"]["spent"] - 1.60) < 1e-9
+    assert not st.exhausted
+    # A globex run sees only globex's $5.00 -> over the $2 cap.
+    st2 = evaluate_budget(b, src, "/ws-a", now=now, attribution={"tenant": "globex"})
+    assert st2.exhausted
+
+
+def test_tag_shorthand_scope_parsing():
+    b = SpendBudget.from_config({"monthly": 50, "scope": "tag:project"})
+    assert b is not None
+    assert b.scope == "tag" and b.scope_tag == "project"
+
+
 def test_rolling_window_excludes_old_spend():
     now = _dt.datetime(2026, 7, 3, 12, 0)
     within = (now - _dt.timedelta(hours=2)).timestamp()
@@ -99,7 +133,7 @@ def test_rolling_window_excludes_old_spend():
 
 # --- real History integration --------------------------------------------
 
-def _record(h, ws, dollars, started_at):
+def _record(h, ws, dollars, started_at, attribution=None):
     h.record_run(
         schedule_name="s", persona="p", workspace=ws,
         started_at=started_at, ended_at=started_at + 1,
@@ -107,7 +141,7 @@ def _record(h, ws, dollars, started_at):
         input_tokens=0, output_tokens=0, cached_input_tokens=0,
         estimated_dollars=dollars, wall_seconds=1.0,
         third_umpire_verdict="PASS", third_umpire_summary={},
-        transcript_path=None, written_files=[],
+        transcript_path=None, written_files=[], attribution=attribution,
     )
 
 
@@ -138,4 +172,55 @@ def test_evaluate_over_real_history(tmp_path):
     _record(h, "/ws", 0.20, at)
     st2 = evaluate_budget(b, h, "/ws", now=now)
     assert st2.exhausted and st2.remaining == 0.0
+    h.close()
+
+
+def test_history_spend_since_filters_by_tag(tmp_path):
+    h = History(db_path=tmp_path / "h.db")
+    now = time.time()
+    _record(h, "/ws-a", 0.30, now - 100, attribution={"tenant": "acme"})
+    _record(h, "/ws-b", 0.40, now - 100, attribution={"tenant": "acme"})
+    _record(h, "/ws-a", 9.00, now - 100, attribution={"tenant": "globex"})
+    # Tag filter sums across workspaces for one tenant.
+    assert abs(h.spend_since(None, now - 200, tag=("tenant", "acme")) - 0.70) < 1e-9
+    assert abs(h.spend_since(None, now - 200, tag=("tenant", "globex")) - 9.00) < 1e-9
+    # An unknown tag value matches nothing.
+    assert h.spend_since(None, now - 200, tag=("tenant", "nope")) == 0.0
+    h.close()
+
+
+def test_legacy_db_migrates_attribution_column(tmp_path):
+    # A DB written by a pre-attribution Boundary (current schema minus the
+    # column) must gain attribution_json on open, without data loss.
+    import sqlite3
+
+    from boundary.history import SCHEMA
+    old_schema = SCHEMA.replace(",\n    attribution_json TEXT", "")
+    assert "attribution_json" not in old_schema
+    db = tmp_path / "old.db"
+    c = sqlite3.connect(str(db))
+    c.executescript(old_schema)
+    c.execute("INSERT INTO runs(started_at, estimated_dollars, workspace) VALUES (1.0, 0.5, '/ws')")
+    c.commit()
+    c.close()
+
+    h = History(db_path=db)  # triggers the migration
+    cols = {r[1] for r in h._conn.execute("PRAGMA table_info(runs)")}
+    assert "attribution_json" in cols
+    assert h.spend_since("/ws", 0.0) == 0.5                     # legacy row preserved
+    assert h.spend_since("/ws", 0.0, tag=("tenant", "acme")) == 0.0
+    h.close()
+
+
+def test_tag_budget_over_real_history(tmp_path):
+    h = History(db_path=tmp_path / "h.db")
+    now = _dt.datetime(2026, 7, 3, 12, 0)
+    at = _dt.datetime(2026, 7, 3, 10, 0).timestamp()
+    _record(h, "/ws-a", 1.20, at, attribution={"tenant": "acme"})
+    _record(h, "/ws-a", 5.00, at, attribution={"tenant": "globex"})
+    b = SpendBudget(monthly=2.00, scope="tag", scope_tag="tenant")
+    acme = evaluate_budget(b, h, "/ws-a", now=now, attribution={"tenant": "acme"})
+    assert not acme.exhausted and abs(acme.remaining - 0.80) < 1e-9
+    globex = evaluate_budget(b, h, "/ws-a", now=now, attribution={"tenant": "globex"})
+    assert globex.exhausted
     h.close()

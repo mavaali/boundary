@@ -1,0 +1,61 @@
+# Example: a schedule that exercises the full spend-control surface.
+#
+# Run it manually to see the knobs in effect:
+#   boundary schedule-run examples/schedules/spend-controlled-daily.yaml
+# Inspect the cross-run budget status any time:
+#   boundary budget examples/schedules/spend-controlled-daily.yaml
+name: spend-controlled-daily
+schedule: "daily 09:00"
+persona: docs-maintainer
+workspace: examples/workspaces/sample-repo
+
+envelope:
+  writable_paths:
+    - scratch/spend-demo-{date}.md
+  max_writes: 1
+  min_writes: 1
+  require_staging: true
+  max_iters: 18
+
+  # --- per-run caps ---
+  max_input_tokens: 300000
+  max_output_tokens: 30000
+  max_dollars: 0.50            # hard per-run ceiling
+  max_wall_seconds: 600
+
+  # --- fail-closed pricing: an unlisted model can't slip past max_dollars ---
+  on_unpriced_model: max_rate  # "zero" restores fail-open; "<model-id>" borrows a rate
+
+  # --- gradient: nudge the agent to converge before the hard halt ---
+  spend_pressure_at: [0.75, 0.9]
+
+  # --- degrade: once 60% of the cap is spent, finish on a cheaper model ---
+  degrade_to: claude-haiku-4.5
+  degrade_at: 0.6
+
+# --- cross-run budget: bound the SUM across runs, scoped per tenant ---
+budget:
+  daily: 2.00
+  monthly: 40.00
+  scope: "tag:tenant"          # one budget per distinct tenant value
+
+# --- attribution: stamp tags on every run so spend can be sliced ---
+attribution:
+  tenant: acme
+  project: docs
+
+on_ambiguity: queue
+on_failure: digest
+on_commit: refuse
+notify: digest_daily
+
+task: |
+  Daily documentation drift check (spend-controlled demo).
+
+  Read README.md and docs/product-notes.md. Stage a thesis about the most likely
+  documentation drift or gap, then write a short note with:
+  - the issue, if any
+  - the exact files supporting it
+  - the smallest recommended edit
+
+  Label claims [DATA], [HYPOTHESIS], or [TRAINING].

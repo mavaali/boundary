@@ -8,6 +8,8 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-03
+
 ### Changed
 - **Secure-by-default sandbox: new `auto` driver is now the default** (`agent`,
   `schedule`, `pipeline`, `boundary run --sandbox-driver`). `auto` prefers `srt`
@@ -19,6 +21,18 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
   `egress_uncontained` check see the driver that actually ran.
 
 ### Added
+- **Degrade-to-cheaper-model** (`Envelope.degrade_to` / `degrade_at`) — once spend
+  crosses `degrade_at` (a fraction of the closest-to-breach cap) the run swaps onto
+  a cheaper model for the rest of the run instead of only nudging: the expensive
+  model does the early reasoning, the cheap one finishes under pressure. Fires once
+  (`model_degrade` event, `degraded→<model>` banner). Spend is now accounted
+  per-response, so mixed-model runs price each segment at the rate that was active
+  when it ran. Configurable in the schedule/pipeline `envelope:` block.
+- **Cost-attribution tags** (`attribution:` YAML block) — stamp arbitrary str→str
+  tags (project/purpose/tenant) on every recorded run so the ledger can be sliced
+  and budgets scoped by tag. New `runs.attribution_json` column (older DBs migrate
+  on open); `History.spend_since(..., tag=)`; budget `scope: tag`/`tag:<key>` sums
+  per distinct tag value across workspaces; pipelines auto-stamp `step:<name>`.
 - **Cross-run spend budgets** (`boundary/budget.py`, `SpendBudget`) — a `budget:`
   block in a schedule/pipeline YAML bounds the SUM of run costs over calendar
   windows (daily/weekly/monthly, calendar-reset) and a trailing rolling window,

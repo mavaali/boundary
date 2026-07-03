@@ -168,6 +168,15 @@ class Envelope:
     # kill switch we hit blind. Empty tuple disables. Mirrors budget_pressure_at,
     # which paces the iteration budget the same way.
     spend_pressure_at: tuple[float, ...] = (0.75, 0.9)
+    # Degrade-to-cheaper-model. When spend crosses `degrade_at` (a fraction of
+    # the closest-to-breach spend cap), swap the run onto `degrade_to` — a
+    # cheaper model id — for the rest of the run, instead of only nudging. The
+    # expensive model does the early, high-leverage reasoning; the cheap one
+    # finishes under budget pressure. Fires once; spend is accounted per
+    # response, so post-swap tokens are priced at the cheaper rate. degrade_to
+    # should be a model present in token_rates. None disables.
+    degrade_to: str | None = None
+    degrade_at: float | None = None
     # No-progress / repeated-action detection (D). When the agent issues the same
     # tool call (name + canonical args) repeatedly it is stuck and burning budget
     # on unproductive exchanges (the ComPilot local-optima behavior). After
@@ -964,6 +973,8 @@ class EnvelopeRunner:
         total_in = 0
         total_out = 0
         total_cached = 0
+        total_dollars = 0.0   # accumulated per-response so a mid-run model swap is priced right
+        degraded = False
         halted_for_budget = False
         halted_for_wallclock = False
         wall_start = _time.time()
@@ -985,8 +996,11 @@ class EnvelopeRunner:
                         print(f"[{i}] ENVELOPE HALT: wall-clock cap reached ({elapsed:.1f}s)")
                     break
 
-            # Spend gate
-            est_dollars = self.envelope.estimate_cost(model_name, total_in, total_out, total_cached)
+            # Spend gate. est_dollars is accumulated per response (total_dollars)
+            # rather than recomputed from cumulative tokens, so a mid-run degrade
+            # to a cheaper model prices each segment at the rate that was active
+            # when it ran. For a fixed model this equals the cumulative estimate.
+            est_dollars = total_dollars
             over_in = self.envelope.max_input_tokens is not None and total_in >= self.envelope.max_input_tokens
             over_out = self.envelope.max_output_tokens is not None and total_out >= self.envelope.max_output_tokens
             over_dollars = self.envelope.max_dollars is not None and est_dollars >= self.envelope.max_dollars
@@ -1005,20 +1019,47 @@ class EnvelopeRunner:
                     print(f"[{i}] ENVELOPE HALT: spend cap reached (in={total_in} out={total_out} ${est_dollars:.4f})")
                 break
 
+            # Fraction of whichever spend cap is closest to breach — shared by
+            # the spend-pressure gradient and the degrade action below.
+            sfracs = []
+            if self.envelope.max_input_tokens:
+                sfracs.append(total_in / self.envelope.max_input_tokens)
+            if self.envelope.max_output_tokens:
+                sfracs.append(total_out / self.envelope.max_output_tokens)
+            if self.envelope.max_dollars:
+                sfracs.append(est_dollars / self.envelope.max_dollars)
+            spend_frac = max(sfracs) if sfracs else 0.0
+
+            # Degrade-to-cheaper-model: once spend crosses degrade_at, swap the
+            # run onto the cheaper model for the rest of the run instead of only
+            # nudging. Fires once; subsequent responses are priced at the cheaper
+            # rate (see total_dollars accumulation below).
+            if (self.envelope.degrade_to and self.envelope.degrade_at is not None
+                    and not degraded and 0 < self.envelope.degrade_at < 1
+                    and spend_frac >= self.envelope.degrade_at):
+                degraded = True
+                _from = model_name
+                try:
+                    self.agent.client.model = self.envelope.degrade_to
+                except Exception:
+                    pass
+                model_name = self.envelope.degrade_to
+                events.append(EnvelopeEvent("model_degrade", "model",
+                    f"{_from}->{model_name} at {int(spend_frac * 100)}% of cap", i))
+                if self.agent.transcript:
+                    self.agent.transcript.log("model_degrade", iteration=i,
+                        from_model=_from, to_model=model_name,
+                        spend_fraction=round(spend_frac, 4))
+                if verbose:
+                    print(f"[{i}] ENVELOPE DEGRADE: {_from} -> {model_name} "
+                          f"(spend {int(spend_frac * 100)}% of cap)")
+
             # Spend-pressure gradient — soft landing before the hard cap. Warn
             # the agent to converge at fractions of whichever spend cap is
             # closest to breach, so budget_halt is a floor we approach on
             # purpose, not a wall we hit mid-thought. Fires each threshold once;
             # if a single step vaults past several, one nudge at the highest.
             if self.envelope.spend_pressure_at:
-                sfracs = []
-                if self.envelope.max_input_tokens:
-                    sfracs.append(total_in / self.envelope.max_input_tokens)
-                if self.envelope.max_output_tokens:
-                    sfracs.append(total_out / self.envelope.max_output_tokens)
-                if self.envelope.max_dollars:
-                    sfracs.append(est_dollars / self.envelope.max_dollars)
-                spend_frac = max(sfracs) if sfracs else 0.0
                 crossed = [t for t in self.envelope.spend_pressure_at
                            if 0 < t < 1 and spend_frac >= t and t not in spend_pressure_fired]
                 if crossed:
@@ -1079,6 +1120,8 @@ class EnvelopeRunner:
             total_in += resp.input_tokens
             total_out += resp.output_tokens
             total_cached += resp.cached_input_tokens
+            total_dollars += self.envelope.estimate_cost(
+                model_name, resp.input_tokens, resp.output_tokens, resp.cached_input_tokens)
             msg = resp.message
             messages.append(msg)
             if self.agent.transcript:
@@ -1181,7 +1224,7 @@ class EnvelopeRunner:
                 staged = enforced._counters.get("staged", 0)  # type: ignore[attr-defined]
                 unstaged_reads = enforced._counters.get("unstaged_reads", 0)  # type: ignore[attr-defined]
                 iters_left = max_iters - i
-                est_now = self.envelope.estimate_cost(model_name, total_in, total_out, total_cached)
+                est_now = total_dollars
                 banner_bits = [
                     f"writes {writes_used}/{self.envelope.max_writes}",
                     f"iters_left {iters_left}/{max_iters}",
@@ -1198,6 +1241,8 @@ class EnvelopeRunner:
                     banner_bits.append(f"cap ${self.envelope.max_dollars:.2f}")
                 if not self.envelope.is_priced(model_name) and self.envelope.on_unpriced_model != "zero":
                     banner_bits.append("rate=fallback")
+                if degraded:
+                    banner_bits.append(f"degraded→{model_name}")
                 if ext_used:
                     banner_bits.append(f"ext {ext_used}/{self.envelope.max_external}")
                 banner = "[ENVELOPE: " + " | ".join(banner_bits) + "]"
@@ -1211,7 +1256,7 @@ class EnvelopeRunner:
                 break
 
         c = enforced._counters  # type: ignore[attr-defined]
-        est = self.envelope.estimate_cost(model_name, total_in, total_out, total_cached)
+        est = total_dollars   # per-response accrual; correct across a mid-run degrade
         wall_seconds = _time.time() - wall_start
         if halted_for_wallclock:
             stop_reason = "wallclock_halt"

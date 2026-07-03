@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
 
 DEFAULT_DB = Path.home() / ".boundary" / "history.db"
+_SAFE_TAG_KEY = re.compile(r"^[A-Za-z0-9_]+$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -28,7 +30,8 @@ CREATE TABLE IF NOT EXISTS runs (
     third_umpire_summary_json TEXT,
     transcript_path TEXT,
     written_files_json TEXT,
-    error TEXT
+    error TEXT,
+    attribution_json TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_started_idx ON runs(started_at);
 CREATE INDEX IF NOT EXISTS runs_schedule_idx ON runs(schedule_name, started_at);
@@ -90,6 +93,11 @@ class History:
         for old, new in renames.items():
             if old in existing and new not in existing:
                 self._conn.execute(f"ALTER TABLE runs RENAME COLUMN {old} TO {new}")
+        # Additive columns on older DBs (idempotent). `existing` is empty on a
+        # fresh DB where `runs` doesn't exist yet — SCHEMA creates it with the
+        # column already present, so only ALTER an existing table.
+        if existing and "attribution_json" not in existing:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN attribution_json TEXT")
         self._conn.commit()
 
     def record_run(self, *, schedule_name: str | None, persona: str | None,
@@ -99,7 +107,7 @@ class History:
                    estimated_dollars: float, wall_seconds: float,
                    third_umpire_verdict: str | None, third_umpire_summary: dict | None,
                    transcript_path: str | None, written_files: list[str],
-                   error: str | None = None) -> int:
+                   error: str | None = None, attribution: dict | None = None) -> int:
         cur = self._conn.execute(
             """INSERT INTO runs(
                 started_at, ended_at, schedule_name, persona, workspace,
@@ -107,14 +115,14 @@ class History:
                 input_tokens, output_tokens, cached_input_tokens,
                 estimated_dollars, wall_seconds,
                 third_umpire_verdict, third_umpire_summary_json, transcript_path,
-                written_files_json, error
-            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?)""",
+                written_files_json, error, attribution_json
+            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?)""",
             (started_at, ended_at, schedule_name, persona, workspace,
              stop_reason, iterations, writes_executed,
              input_tokens, output_tokens, cached_input_tokens,
              estimated_dollars, wall_seconds,
              third_umpire_verdict, json.dumps(third_umpire_summary or {}), transcript_path,
-             json.dumps(written_files), error),
+             json.dumps(written_files), error, json.dumps(attribution or {})),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -144,20 +152,33 @@ class History:
         cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
         return [dict(zip(cols, r, strict=True)) for r in rows]
 
-    def spend_since(self, workspace: str | None, since: float) -> float:
+    def spend_since(self, workspace: str | None, since: float,
+                    tag: tuple[str, str | None] | None = None) -> float:
         """Sum estimated_dollars for runs with started_at >= since. The `runs`
         table is the spend ledger — cross-run budgets aggregate over it rather
         than a second store, so there is nothing to keep in sync. workspace=None
-        sums across every workspace (a global budget)."""
-        if workspace is None:
-            row = self._conn.execute(
-                "SELECT COALESCE(SUM(estimated_dollars), 0) FROM runs WHERE started_at >= ?",
-                (since,)).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT COALESCE(SUM(estimated_dollars), 0) FROM runs "
-                "WHERE workspace = ? AND started_at >= ?",
-                (workspace, since)).fetchone()
+        sums across every workspace (a global budget). `tag` is an optional
+        (key, value) attribution filter — e.g. ("tenant", "acme") sums only runs
+        tagged for that tenant, so budgets can be scoped per project/tenant."""
+        clauses = ["started_at >= ?"]
+        params: list = [since]
+        if workspace is not None:
+            clauses.append("workspace = ?")
+            params.append(workspace)
+        if tag is not None:
+            key, val = tag
+            # Attribution keys come from trusted config; guard the JSON path anyway.
+            if not _SAFE_TAG_KEY.match(key):
+                raise ValueError(f"invalid attribution tag key: {key!r}")
+            path = f"$.{key}"
+            if val is None:
+                clauses.append(f"json_extract(attribution_json, '{path}') IS NULL")
+            else:
+                clauses.append(f"json_extract(attribution_json, '{path}') = ?")
+                params.append(val)
+        row = self._conn.execute(
+            f"SELECT COALESCE(SUM(estimated_dollars), 0) FROM runs WHERE {' AND '.join(clauses)}",
+            params).fetchone()
         return float(row[0] or 0.0)
 
     def runs_for_workspace(self, workspace: str, limit: int = 20) -> list[dict]:
