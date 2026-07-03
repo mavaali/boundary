@@ -128,11 +128,13 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
         },
     )
     def glob_files(pattern: str) -> str:
-        matches = [
-            str(p.relative_to(workspace.root))
-            for p in workspace.root.glob(pattern)
-            if p.is_file()
-        ]
+        try:
+            matches = [
+                str(p.relative_to(workspace.root))
+                for p in workspace.safe_glob(pattern)
+            ]
+        except PermissionError as e:
+            return f"ERROR: {e}"
         matches.sort()
         return "\n".join(matches[:500]) if matches else "(no matches)"
 
@@ -154,9 +156,11 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
         total_hits = 0
         files_with_match: set[str] = set()
         files_scanned = 0
-        for p in workspace.root.glob(glob):
-            if not p.is_file():
-                continue
+        try:
+            candidates = list(workspace.safe_glob(glob))
+        except PermissionError as e:
+            return f"ERROR: {e}"
+        for p in candidates:
             files_scanned += 1
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
@@ -195,9 +199,11 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
         total_hits = 0
         files_with_match = 0
         files_scanned = 0
-        for p in workspace.root.glob(glob):
-            if not p.is_file():
-                continue
+        try:
+            candidates = list(workspace.safe_glob(glob))
+        except PermissionError as e:
+            return f"ERROR: {e}"
+        for p in candidates:
             files_scanned += 1
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")

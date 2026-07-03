@@ -63,7 +63,16 @@ class Agent:
                 driver=sandbox_driver, egress_allowlist=egress_allowlist,
             )
         if enable_web:
-            register_web_tools(self.tools)
+            # fetch_url makes in-process HTTP calls that the srt sandbox (which
+            # only wraps bash) cannot see. Enforce the egress allowlist here so a
+            # contained run's web tool cannot exceed it. Enforce whenever the
+            # driver is srt (egress is meant to be OS-bounded) or the run declared
+            # an allowlist at all.
+            register_web_tools(
+                self.tools,
+                egress_allowlist=self.egress_allowlist,
+                enforce_egress=(self.sandbox_driver == "srt") or bool(self.egress_allowlist),
+            )
         if enable_clawpilot:
             register_clawpilot_tools(self.tools, workspace_root=self.workspace.root)
         self.max_iters = max_iters
