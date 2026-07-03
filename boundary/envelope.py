@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -82,6 +83,53 @@ def _bash_command_is_commit(command: str) -> tuple[bool, str]:
             return False, ""
         return True, f"git {sub}"
     return True, base
+
+
+# -----------------------------------------------------------------------------
+# writable_paths matching (F2). The old check used fnmatch on the raw path
+# string, where `*` spans `/` and `..` is not neutralized — so "reports/*.md"
+# authorized "reports/a/b/c.md" and "reports/../secret.md". We normalize the
+# candidate to a workspace-relative POSIX path (collapsing `.`/`..`, rejecting
+# anything that escapes the root) and match with anchored, segment-aware glob
+# semantics: `*`/`?`/`[...]` match within a single segment, `**` matches across
+# segments (opt-in). Matching is case-sensitive (fnmatchcase) so the allowlist
+# is not silently widened on case-insensitive filesystems (F11).
+# -----------------------------------------------------------------------------
+
+def _normalize_rel(path: str) -> str | None:
+    """Return `path` as a normalized workspace-relative POSIX path, or None if it
+    escapes the workspace root (absolute, or a leading `..` after collapsing)."""
+    p = str(path).replace("\\", "/").lstrip("/")
+    if not p:
+        return None
+    norm = posixpath.normpath(p)
+    if norm == "." or norm == ".." or norm.startswith("../") or norm.startswith("/"):
+        return None
+    return norm
+
+
+def _anchored_glob_match(pattern: str, path: str) -> bool:
+    """Anchored, segment-aware glob match. `**` matches zero or more whole path
+    segments; every other wildcard is confined to a single segment."""
+    pat_parts = [s for s in pattern.replace("\\", "/").lstrip("/").split("/") if s]
+    path_parts = [s for s in path.split("/") if s]
+    return _match_segments(pat_parts, path_parts)
+
+
+def _match_segments(pat: list[str], path: list[str]) -> bool:
+    if not pat:
+        return not path
+    head, rest = pat[0], pat[1:]
+    if head == "**":
+        # `**` consumes zero or more segments.
+        if _match_segments(rest, path):
+            return True
+        return bool(path) and _match_segments(pat, path[1:])
+    if not path:
+        return False
+    if fnmatch.fnmatchcase(path[0], head):
+        return _match_segments(rest, path[1:])
+    return False
 
 
 @dataclass
@@ -185,11 +233,12 @@ class Envelope:
     def path_allowed(self, path: str) -> bool:
         if not self.writable_paths:
             return False
-        candidates = [path, path.lstrip("/")]
+        norm = _normalize_rel(path)
+        if norm is None:  # escapes the workspace root (absolute or leading ..)
+            return False
         for pat in self.writable_paths:
-            for c in candidates:
-                if c == pat or fnmatch.fnmatch(c, pat):
-                    return True
+            if _anchored_glob_match(pat, norm):
+                return True
         return False
 
 
@@ -580,6 +629,23 @@ def _make_enforced_tool(
                 f"is '{policy}'. Do not retry. If the task genuinely requires this "
                 f"commit, stop and report via ask_human — a human must re-scope "
                 f"the run with on_commit=allow + commit_allowlist=['{base.name}']."
+            )
+
+        # 5b. Fail-closed catch (F3). Every mutating tool must be bounded by an
+        #     explicit branch above: write_file/edit_file/append_file/bash are
+        #     handled by name, and all commit tools by kind. A future kind="write"
+        #     tool with an unrecognized name would otherwise fall through to the
+        #     default path and execute with NO path_allowed, max_writes, or taint
+        #     gate. Refuse rather than run an unbounded side effect.
+        if base.kind in ("write", "commit"):
+            events.append(EnvelopeEvent(
+                "write_refused", base.name, f"unhandled {base.kind} tool (fail-closed)", i,
+            ))
+            return (
+                f"ENVELOPE REFUSED: '{base.name}' is a {base.kind} tool the envelope "
+                f"has no bounding gate for, so executing it would bypass the path and "
+                f"budget limits. Refusing (fail-closed). Wire an explicit gate for this "
+                f"tool, or use write_file/edit_file/append_file/bash_commit."
             )
 
         # 6. External rate cap

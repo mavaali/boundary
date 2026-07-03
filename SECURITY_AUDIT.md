@@ -33,20 +33,24 @@ containment — and egress containment has holes (F4, F5, F7).
 
 ## Findings
 
-| ID | Severity | Title | Guarantee eroded |
-|----|----------|-------|------------------|
-| F1 | **Critical** | `grep`/`glob`/`count_matches` escape the read-jail via `../` in the glob (and via planted symlinks) | Read-jail |
-| F4 | **High** | `fetch_url` bypasses the srt egress allowlist entirely | Egress containment |
-| F5 | **High** | `fetch_url` SSRF: no scheme/host validation, follows redirects | Egress containment |
-| F2 | **High** | `writable_paths` allowlist is far looser than declared (`*` spans `/`, `..` not neutralized) | Write-jail scope |
-| F3 | **Medium** | Envelope write-gate dispatches on tool *name*, not *kind* — latent bypass | Write-jail |
-| F7 | **Medium** | Commit-class bash denylist is trivially bypassable | No unapproved actions |
-| F6 | **Medium** | No general read boundary for bash; on-disk secrets are in scope | (amplifier) |
-| F8 | **Low** | TOCTOU between `Workspace.resolve()` and the actual open | Read/Write-jail |
-| F9 | **Low** | Windows scheduler builds a `cmd /c` string with interpolated, unvalidated values | Local integrity |
-| F10 | **Low** | Headless run-lock has a TOCTOU race / PID-reuse steal | Concurrency safety |
-| F11 | **Low** | `path_allowed` uses case-folding `fnmatch`, widening the allowlist on macOS/Windows | Write-jail scope |
-| F12 | **Info** | Untrusted content (web + discover sources) steers the agent (prompt injection) | Taint awareness |
+**Remediation status:** F1 and F4 fixed in #21; F2 and F3 fixed in the P1
+follow-up (also closes F11 as a side effect of case-sensitive matching). F5 and
+F6–F10 remain open.
+
+| ID | Severity | Status | Title | Guarantee eroded |
+|----|----------|--------|-------|------------------|
+| F1 | **Critical** | ✅ fixed (#21) | `grep`/`glob`/`count_matches` escape the read-jail via `../` in the glob (and via planted symlinks) | Read-jail |
+| F4 | **High** | ✅ fixed (#21) | `fetch_url` bypasses the srt egress allowlist entirely | Egress containment |
+| F5 | **High** | open | `fetch_url` SSRF: no scheme/host validation, follows redirects | Egress containment |
+| F2 | **High** | ✅ fixed (P1) | `writable_paths` allowlist is far looser than declared (`*` spans `/`, `..` not neutralized) | Write-jail scope |
+| F3 | **Medium** | ✅ fixed (P1) | Envelope write-gate dispatches on tool *name*, not *kind* — latent bypass | Write-jail |
+| F7 | **Medium** | open | Commit-class bash denylist is trivially bypassable | No unapproved actions |
+| F6 | **Medium** | open | No general read boundary for bash; on-disk secrets are in scope | (amplifier) |
+| F8 | **Low** | open | TOCTOU between `Workspace.resolve()` and the actual open | Read/Write-jail |
+| F9 | **Low** | open | Windows scheduler builds a `cmd /c` string with interpolated, unvalidated values | Local integrity |
+| F10 | **Low** | open | Headless run-lock has a TOCTOU race / PID-reuse steal | Concurrency safety |
+| F11 | **Low** | ✅ fixed (P1) | `path_allowed` uses case-folding `fnmatch`, widening the allowlist on macOS/Windows | Write-jail scope |
+| F12 | **Info** | — | Untrusted content (web + discover sources) steers the agent (prompt injection) | Taint awareness |
 
 **Correctly done (don't regress these):** `Workspace.resolve()` uses full
 symlink resolution (`.resolve()`) + component-wise `relative_to()`, so
