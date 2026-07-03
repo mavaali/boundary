@@ -15,7 +15,6 @@ from boundary.agent import Agent
 from boundary.envelope import Envelope, EnvelopeRunner
 from boundary.tools.registry import Tool
 
-
 # --- Fail-closed pricing (pure, no loop) ---------------------------------
 
 def test_known_model_prices_unchanged():
@@ -139,3 +138,58 @@ def test_gradient_disabled_when_empty(tmp_path):
     res = EnvelopeRunner(_agent(tmp_path, client), env).run("go")
     assert res.loop_result.stop_reason == "budget_halt"
     assert not any(e.kind == "spend_pressure" for e in res.events)
+
+
+# --- Degrade-to-cheaper-model --------------------------------------------
+
+class _ModelClient:
+    """Reports a big output-token count each turn and carries a mutable `model`,
+    so a mid-run degrade re-prices subsequent responses at the cheaper rate."""
+    def __init__(self, model: str, out_per_call: int):
+        self.model = model
+        self.out = out_per_call
+
+    def chat(self, messages, tools=None, **kw):
+        from boundary.clients.base import ChatResponse, Message, ToolCall
+        tc = ToolCall(id="r", name="noop", arguments={"x": "read"})
+        return ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tc]),
+            finish_reason="tool_calls",
+            input_tokens=0, output_tokens=self.out, cached_input_tokens=0,
+        )
+
+
+def test_degrade_swaps_model_and_stretches_budget(tmp_path):
+    # Opus output is $75/1M => 40 out/turn = $0.003. Under a $0.01 cap, pure-opus
+    # halts on the 5th gate (4 turns). Degrading to gpt-5.4 ($10/1M => $0.0004/turn)
+    # at 50% makes the tail ~7.5x cheaper, so the run reaches many more turns before
+    # the cap still, eventually, binds.
+    client = _ModelClient(model="claude-opus-4.7", out_per_call=40)
+    env = Envelope(writable_paths=["out.md"], require_staging=False,
+                   max_input_tokens=None, max_output_tokens=None, max_dollars=0.01,
+                   spend_pressure_at=(),  # isolate degrade from the nudge
+                   repeat_halt=0,  # identical noop calls must not trip no-progress here
+                   degrade_to="gpt-5.4", degrade_at=0.5)
+    res = EnvelopeRunner(_agent(tmp_path, client), env).run("go")
+
+    degrades = [e for e in res.events if e.kind == "model_degrade"]
+    assert len(degrades) == 1
+    assert "claude-opus-4.7->gpt-5.4" in degrades[0].detail
+    # The swap must precede the eventual budget_halt.
+    assert res.loop_result.stop_reason == "budget_halt"
+    halt_iter = next(e.iteration for e in res.events if e.kind == "budget_halt")
+    assert degrades[0].iteration < halt_iter
+    # Cheaper tail => the run outlives the pure-opus halt point (~iter 5).
+    assert res.loop_result.iterations > 6
+    # The client's model attribute was actually swapped.
+    assert client.model == "gpt-5.4"
+
+
+def test_no_degrade_when_unconfigured(tmp_path):
+    client = _ModelClient(model="claude-opus-4.7", out_per_call=100_000)
+    env = Envelope(writable_paths=["out.md"], require_staging=False,
+                   max_input_tokens=None, max_output_tokens=None, max_dollars=0.01,
+                   spend_pressure_at=(), repeat_halt=0)
+    res = EnvelopeRunner(_agent(tmp_path, client), env).run("go")
+    assert not any(e.kind == "model_degrade" for e in res.events)
+    assert client.model == "claude-opus-4.7"

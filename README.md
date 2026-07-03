@@ -66,6 +66,130 @@ For sensitive work, prefer `--sandbox-driver srt` with a tight egress allowlist
 (or run as a dedicated OS user / inside a container), add `--deny-read-secrets`
 and `--require-srt-for-bash`, and disable shell or web tools when not needed.
 
+## Spend control
+
+An agent you leave running is an agent spending money. Boundary treats spend as a
+first-class boundary, not a footnote — the same "bound it, then verify it" posture
+it applies to writes and egress. Five composable primitives, from one run to a
+whole tenant:
+
+```
+per-run caps ─▶ fail-closed pricing ─▶ spend gradient ─▶ degrade-to-cheaper ─▶ cross-run budgets
+   one run          honest cost          soft landing        cheaper tail        many runs
+```
+
+### 1. Per-run caps
+
+Every run is bounded by input/output tokens, an optional dollar ceiling, and a
+wall-clock kill switch. On the CLI:
+
+```bash
+boundary run ... \
+  --envelope-max-input-tokens 500000 \
+  --envelope-max-output-tokens 50000 \
+  --envelope-max-dollars 0.25 \
+  --envelope-max-wall-seconds 900
+```
+
+or in a schedule/pipeline YAML:
+
+```yaml
+envelope:
+  max_input_tokens: 500000
+  max_output_tokens: 50000
+  max_dollars: 0.25
+```
+
+### 2. Fail-closed pricing
+
+The dollar cap can only bind for a model the rate card knows. An **unlisted**
+model used to estimate at `$0.00` and sail past `max_dollars` entirely — an
+unpriced model was an *uncapped* run. Unknown models are now priced at a
+conservative upper bound so the cap still bites; the live banner shows
+`rate=fallback`.
+
+```yaml
+envelope:
+  on_unpriced_model: max_rate   # default; "zero" restores fail-open, "<model-id>" borrows a rate
+```
+
+### 3. Spend gradient — a soft landing, not a wall
+
+Hitting a cap mid-write wastes the tokens already spent on an unfinished
+artifact. Before the hard halt at 100%, the agent is nudged to converge at
+fractions of whichever cap is closest to breach:
+
+```yaml
+envelope:
+  spend_pressure_at: [0.75, 0.9]   # nudge at 75% and 90%; [] disables
+```
+
+At 90% the agent sees *"spend at 90% of cap … converge now: finish your current
+write and stop"* and a `spend_pressure` event is logged.
+
+### 4. Degrade-to-cheaper-model
+
+Instead of only nudging, swap the run onto a cheaper model once spend crosses a
+threshold — the expensive model does the early, high-leverage reasoning; the
+cheap one finishes under budget pressure. Spend is accounted per response, so
+the post-swap tail is priced at the cheaper rate.
+
+```yaml
+envelope:
+  max_dollars: 1.00
+  degrade_to: claude-haiku-4.5   # a model in the rate card
+  degrade_at: 0.6                # swap at 60% of the cap
+```
+
+### 5. Cross-run budgets
+
+Per-run caps bound *one* run. A schedule firing hourly at `$0.50`/run has no
+ceiling on the **sum**. A `budget:` block bounds spend across runs over calendar
+windows (daily/weekly/monthly, calendar-reset) and a trailing rolling window,
+aggregated over the run-history ledger — the same data `boundary history` reads,
+so there's no second store to drift:
+
+```yaml
+budget:
+  daily: 5.00
+  weekly: 20.00
+  monthly: 60.00
+  rolling: 3.00
+  rolling_hours: 6
+  scope: workspace     # or "global"
+```
+
+At run time a run whose window is already spent out is **skipped** before any
+cost (`stop_reason: skipped_budget`); otherwise its per-run `max_dollars` is
+**clamped** to the tightest remaining headroom, so primitives 3–4 enforce the
+cross-run ceiling from inside the run.
+
+### 6. Cost attribution
+
+Stamp arbitrary tags on every run so the ledger can be sliced — and budgets
+scoped — per project, purpose, or tenant:
+
+```yaml
+attribution:
+  tenant: acme
+  project: pricing
+budget:
+  monthly: 50.00
+  scope: "tag:tenant"   # one $50/mo budget PER tenant, summed across workspaces
+```
+
+Inspect any config's live status (exit code `3` when a window is exhausted, so
+cron/CI can branch on it):
+
+```bash
+boundary budget path/to/schedule.yaml
+#  budget  scope=tag:tenant=acme  workspace=/work/acme
+#    monthly  $3.5000 / $50.00   $46.5000 left
+#    -> ok; binding=monthly; next run capped at $0.2800
+```
+
+Full reference and run-cost ballparks: **[GUIDE.md](GUIDE.md)** → *Cost / budget knobs*.
+
 ## Where Boundary sits
 
 Boundary's category is **authorization + post-run verification** for tool-calling

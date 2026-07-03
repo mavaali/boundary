@@ -33,6 +33,11 @@ class ScheduleConfig:
     max_output_tokens: int = 50_000
     max_dollars: float | None = 1.00
     max_wall_seconds: float = 900.0
+    # Degrade-to-cheaper-model (see Envelope). When spend crosses degrade_at
+    # (fraction of the closest spend cap), swap onto degrade_to for the rest of
+    # the run. Both must be set to activate. Parsed from the `envelope:` block.
+    degrade_to: str | None = None
+    degrade_at: float | None = None
     on_ambiguity: AmbiguityPolicy = "queue"
     on_failure: FailurePolicy = "digest"
     # Commit-tool policy. "refuse" is the default and the safe choice for
@@ -78,6 +83,10 @@ class ScheduleConfig:
     # costs over calendar/rolling windows, not just one run. None = no ceiling
     # beyond the per-run max_dollars. Parsed from the YAML `budget:` block.
     spend_budget: Any = None  # budget.SpendBudget | None
+    # Cost-attribution tags stamped on every run this schedule records, so spend
+    # can be sliced (and tag-scoped budgets aggregated) by project/purpose/tenant.
+    # Parsed from the YAML `attribution:` block. Arbitrary str->str dimensions.
+    attribution: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> ScheduleConfig:
@@ -99,6 +108,8 @@ class ScheduleConfig:
             max_output_tokens=int(env.get("max_output_tokens", 50_000)),
             max_dollars=(float(env["max_dollars"]) if env.get("max_dollars") is not None else None),
             max_wall_seconds=float(env.get("max_wall_seconds", 900.0)),
+            degrade_to=env.get("degrade_to"),
+            degrade_at=(float(env["degrade_at"]) if env.get("degrade_at") is not None else None),
             on_ambiguity=data.get("on_ambiguity", "queue"),
             on_failure=data.get("on_failure", "digest"),
             on_commit=data.get("on_commit", "refuse"),
@@ -121,6 +132,7 @@ class ScheduleConfig:
             write_profile=data.get("write_profile", "synthesis" if data.get("discover") else "edit"),
             triggers=list(data.get("triggers", []) or []),
             spend_budget=SpendBudget.from_config(data.get("budget")),
+            attribution={str(k): str(v) for k, v in (data.get("attribution") or {}).items()},
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:

@@ -77,6 +77,8 @@ class PipelineStep:
     max_output_tokens: int | None = None
     max_dollars: float | None = None
     max_wall_seconds: float | None = None
+    degrade_to: str | None = None
+    degrade_at: float | None = None
     on_ambiguity: str | None = None
     on_commit: str | None = None
     on_taint: str | None = None
@@ -85,6 +87,7 @@ class PipelineStep:
     commit_allowlist: list[str] = field(default_factory=list)
     model: str | None = None
     notify: Any = None
+    attribution: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -144,6 +147,8 @@ class PipelineConfig:
             max_output_tokens=_coalesce(step.max_output_tokens, env_defaults.get("max_output_tokens"), 50_000),
             max_dollars=_coalesce_nullable(step.max_dollars, env_defaults.get("max_dollars"), 1.00),
             max_wall_seconds=_coalesce(step.max_wall_seconds, env_defaults.get("max_wall_seconds"), 900.0),
+            degrade_to=step.degrade_to or env_defaults.get("degrade_to"),
+            degrade_at=_coalesce_nullable(step.degrade_at, env_defaults.get("degrade_at"), None),
             on_ambiguity=step.on_ambiguity or self.defaults.get("on_ambiguity", "queue"),
             on_commit=step.on_commit or self.defaults.get("on_commit", "refuse"),
             on_taint=step.on_taint or self.defaults.get("on_taint", "warn"),
@@ -158,6 +163,13 @@ class PipelineConfig:
             # workspace, so a workspace-scoped budget on each step config
             # aggregates across the whole pipeline (and across its repeat runs).
             spend_budget=SpendBudget.from_config(self.defaults.get("budget")),
+            # Attribution: pipeline-wide tags, plus the step name as `step` so the
+            # ledger can be sliced per step. A step's own `attribution` overrides.
+            attribution={
+                **{str(k): str(v) for k, v in (self.defaults.get("attribution") or {}).items()},
+                "step": step.name,
+                **{str(k): str(v) for k, v in (getattr(step, "attribution", None) or {}).items()},
+            },
         )
 
     def validate(self) -> list[str]:
@@ -370,6 +382,8 @@ def _load_step(raw: dict[str, Any]) -> PipelineStep:
         max_output_tokens=env.get("max_output_tokens"),
         max_dollars=env.get("max_dollars"),
         max_wall_seconds=env.get("max_wall_seconds"),
+        degrade_to=env.get("degrade_to"),
+        degrade_at=env.get("degrade_at"),
         on_ambiguity=raw.get("on_ambiguity"),
         on_commit=raw.get("on_commit"),
         on_taint=raw.get("on_taint"),
@@ -378,6 +392,7 @@ def _load_step(raw: dict[str, Any]) -> PipelineStep:
         commit_allowlist=list(raw.get("commit_allowlist", []) or []),
         model=raw.get("model"),
         notify=raw.get("notify"),
+        attribution={str(k): str(v) for k, v in (raw.get("attribution") or {}).items()},
     )
 
 

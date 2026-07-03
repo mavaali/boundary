@@ -640,22 +640,28 @@ def main(argv: list[str] | None = None) -> int:
         # Key the ledger query on the RAW workspace string — run_headless records
         # runs under str(config.workspace) unexpanded, so we must match it (not
         # expanduser()) or the aggregation would miss every recorded run.
+        attribution: dict = {}
         try:
             cfg = ScheduleConfig.load(args.config)
             budget = cfg.spend_budget
             workspace = str(cfg.workspace)
+            attribution = dict(cfg.attribution or {})
         except KeyError:
             # Not a schedule YAML — try a pipeline (budget lives under defaults).
             from boundary.pipeline import PipelineConfig
             pc = PipelineConfig.load(args.config)
             budget = SpendBudget.from_config(pc.defaults.get("budget"))
             workspace = str(pc.workspace)
+            attribution = {str(k): str(v) for k, v in (pc.defaults.get("attribution") or {}).items()}
         if not budget or not budget.is_active():
             print("(no budget configured — add a `budget:` block to the YAML)")
             return 0
         h = History()
-        st = evaluate_budget(budget, h, workspace)
-        print(f"budget  scope={budget.scope}  workspace={workspace}")
+        st = evaluate_budget(budget, h, workspace, attribution=attribution)
+        scope_desc = budget.scope
+        if budget.scope == "tag" and budget.scope_tag:
+            scope_desc = f"tag:{budget.scope_tag}={attribution.get(budget.scope_tag, '(unset)')}"
+        print(f"budget  scope={scope_desc}  workspace={workspace}")
         for name, w in st.windows.items():
             tail = "OVER CAP" if w["remaining"] <= 0 else f"${w['remaining']:.4f} left"
             print(f"  {name:8s} ${w['spent']:.4f} / ${w['cap']:.2f}   {tail}")
