@@ -12,6 +12,7 @@ def register_shell_tools(
     allow: bool = True,
     driver: str = "seatbelt",
     egress_allowlist: list[str] | None = None,
+    deny_read: list[str] | None = None,
 ) -> None:
     if not allow:
         return
@@ -23,6 +24,7 @@ def register_shell_tools(
             timeout=timeout,
             driver=driver,
             egress_allowlist=egress_allowlist,
+            deny_read=deny_read,
         )
 
     @registry.add(

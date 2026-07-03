@@ -43,6 +43,13 @@ class ScheduleConfig:
     on_taint: str = "warn"
     sandbox_driver: str = "auto"
     egress_allowlist: list[str] = field(default_factory=list)
+    # Read denylist (F6): paths hidden from the jailed bash process. Only
+    # enforceable under srt. `deny_read_secrets` prepends a built-in set of
+    # common credential locations (~/.aws, ~/.ssh, ~/.config/gh, ...).
+    deny_read: list[str] = field(default_factory=list)
+    deny_read_secrets: bool = False
+    # Strict egress (F7): refuse bash unless the driver is srt (egress-bounded).
+    require_srt_for_bash: bool = False
     client: str = "copilot"
     model: str | None = None
     notify: Any = "digest_daily"        # informational, or a notify config block
@@ -92,6 +99,9 @@ class ScheduleConfig:
             on_taint=data.get("on_taint", "warn"),
             sandbox_driver=data.get("sandbox_driver", "auto"),
             egress_allowlist=list(data.get("egress_allow", []) or []),
+            deny_read=list(data.get("deny_read", []) or []),
+            deny_read_secrets=bool(data.get("deny_read_secrets", False)),
+            require_srt_for_bash=bool(env.get("require_srt_for_bash", False)),
             commit_allowlist=list(data.get("commit_allowlist", []) or []),
             client=data.get("client", "copilot"),
             model=data.get("model"),
@@ -120,6 +130,13 @@ class ScheduleConfig:
 
     def rendered_task(self, now: _dt.datetime | None = None) -> str:
         return self.render_template(self.task, now)
+
+    def effective_deny_read(self) -> list[str]:
+        """Resolve the read denylist: the built-in secret set (when
+        deny_read_secrets is on) followed by any explicit deny_read entries."""
+        from boundary.tools.sandbox import default_deny_read
+        base = default_deny_read() if self.deny_read_secrets else []
+        return base + list(self.deny_read)
 
     def validate_commit_policy(self) -> list[str]:
         """Return a list of validation errors (empty = ok).

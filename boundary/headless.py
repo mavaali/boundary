@@ -272,6 +272,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             extra_system=extra_system,
             sandbox_driver=config.sandbox_driver,
             egress_allowlist=config.egress_allowlist,
+            deny_read=config.effective_deny_read(),
         )
         # Stamp charter hash into the transcript header for post-hoc grouping
         if agent.transcript:
@@ -296,6 +297,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             commit_allowlist=list(config.commit_allowlist or []),
             on_taint=config.on_taint,
             write_profile=config.write_profile,
+            require_srt_for_bash=config.require_srt_for_bash,
         )
         if config.runs and config.runs > 1:
             # Best-of-K, headless: fan out K runs, never block on close calls.
@@ -310,6 +312,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
                     model=config.model, enable_clawpilot=True, max_iters=config.max_iters,
                     extra_system=extra_system, sandbox_driver=config.sandbox_driver,
                     egress_allowlist=config.egress_allowlist,
+                    deny_read=config.effective_deny_read(),
                 )
                 if a.transcript:
                     a.transcript.close()

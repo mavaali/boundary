@@ -37,6 +37,14 @@ from boundary.tools.registry import Tool, ToolRegistry
 # denylist: if bash's command starts with any of these binaries (basename of
 # argv[0]), the call is refused with instructions to use `bash_commit` instead.
 #
+# THIS IS A NUDGE, NOT A SECURITY BOUNDARY. It inspects only argv[0], so it is
+# bypassed by `bash -c '…'`, pipes, `;`/`&&` chaining, `env curl …`, an
+# interpreter (`python -c`), or a leading newline. The actual egress boundary is
+# the srt sandbox's OS-enforced allowlist; on seatbelt/none there is NO egress
+# containment and this denylist is the only (porous) barrier. Runs that must not
+# shell out without contained egress should set Envelope.require_srt_for_bash
+# (F7), which refuses bash outright unless the driver is srt.
+#
 # SLOPE GUARDRAILS — read before adding entries:
 #   - HARD CAP: 12 entries. At 13, stop and reconsider the model, don't extend.
 #   - NO REGEX, NO ARGUMENT INSPECTION except the single sanctioned `git`
@@ -144,6 +152,13 @@ class Envelope:
     max_appends: int = 10
     require_reason: bool = True
     allow_bash: bool = True
+    # Strict egress (F7): when True, bash is REFUSED unless the resolved sandbox
+    # driver is srt. seatbelt/none do not bound network egress, so on those
+    # drivers bash is an uncontained exfil channel and the commit-class denylist
+    # is only a nudge (trivially bypassed via `bash -c`, pipes, `env`, etc.).
+    # Off by default to preserve seatbelt/none workflows; turn on for
+    # high-sensitivity runs that must not shell out without OS-enforced egress.
+    require_srt_for_bash: bool = False
     stop_on_ambiguity: bool = True
     budget_pressure_at: tuple[float, ...] = (0.6, 0.8)
     # No-progress / repeated-action detection (D). When the agent issues the same
@@ -511,7 +526,23 @@ def _make_enforced_tool(
         if base.name == "bash":
             if not envelope.allow_bash:
                 return "ENVELOPE REFUSED: bash is disabled for this run."
-            # Egress denylist — see BASH_COMMIT_DENYLIST docstring at top of file.
+            # Strict egress (F7): refuse bash unless egress is OS-bounded (srt).
+            if envelope.require_srt_for_bash and sandbox_driver != "srt":
+                events.append(EnvelopeEvent(
+                    "bash_refused", base.name,
+                    f"require_srt_for_bash driver={sandbox_driver}", i,
+                ))
+                return (
+                    "ENVELOPE REFUSED: this run sets require_srt_for_bash — bash is "
+                    "only allowed under the srt sandbox, which bounds network egress "
+                    f"across the process tree. The active driver is {sandbox_driver!r}, "
+                    "which does NOT contain egress (bash could exfiltrate). Re-run with "
+                    "--sandbox-driver srt and a tight --egress-allow, or lift the "
+                    "requirement if uncontained egress is acceptable for this run."
+                )
+            # Commit-class nudge (NOT a security boundary — see BASH_COMMIT_DENYLIST
+            # docstring). The real egress boundary is srt; this only catches the
+            # most literal irreversible invocations.
             cmd_str = kwargs.get("command", "") if isinstance(kwargs.get("command"), str) else ""
             is_commit, matched = _bash_command_is_commit(cmd_str)
             if is_commit:

@@ -30,18 +30,19 @@ from pathlib import Path
 # rather than degrading.
 SANDBOX_DRIVERS = ("auto", "seatbelt", "srt", "none")
 
-_AUTO_WARNED = False
+_WARNED_MESSAGES: set[str] = set()
 _AUTO_WARNED_LOCK = threading.Lock()
 
 
 def warn_once(message: str) -> None:
-    """Emit `message` to stderr exactly once per process, even under concurrent
-    runs (batch best-of-K, multi-threaded scheduling)."""
-    global _AUTO_WARNED
+    """Emit `message` to stderr once per process — per distinct message, even
+    under concurrent runs (batch best-of-K, multi-threaded scheduling). Deduping
+    per message (not one global latch) so a fallback warning does not swallow an
+    unrelated one (e.g. the deny_read-on-non-srt notice)."""
     with _AUTO_WARNED_LOCK:
-        if _AUTO_WARNED:
+        if message in _WARNED_MESSAGES:
             return
-        _AUTO_WARNED = True
+        _WARNED_MESSAGES.add(message)
     print(message, file=sys.stderr, flush=True)
 
 
@@ -88,6 +89,20 @@ def _format(r: subprocess.CompletedProcess) -> str:
     return f"[exit {r.returncode}]\n{out[-8000:]}"
 
 
+def default_deny_read() -> list[str]:
+    """A built-in set of common on-disk secret locations to hide from the jailed
+    process. Resolved against the REAL home (before _jail_env repoints HOME), so
+    these point at where credentials actually live. Only enforceable under srt
+    (denyRead); seatbelt/none leave reads unrestricted."""
+    home = Path.home()
+    rel = [
+        ".aws", ".ssh", ".gnupg", ".kube",
+        ".config/gh", ".config/gcloud", ".config/git/credentials",
+        ".docker/config.json", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+    ]
+    return [str(home / r) for r in rel] + ["/etc/shadow"]
+
+
 def run_sandboxed(
     command: str,
     *,
@@ -95,6 +110,7 @@ def run_sandboxed(
     timeout: int,
     driver: str = "auto",
     egress_allowlist: list[str] | None = None,
+    deny_read: list[str] | None = None,
 ) -> str:
     root = Path(workspace_root).resolve()
     if driver == "auto":
@@ -109,10 +125,16 @@ def run_sandboxed(
                 "without any jail explicitly."
             )
         driver = resolved
+    if deny_read and driver != "srt":
+        warn_once(
+            "[boundary] WARNING: deny_read/--deny-read is set but the active sandbox "
+            f"driver is {driver!r}, which cannot restrict reads. Secret paths remain "
+            "readable. Use --sandbox-driver srt to enforce the read denylist."
+        )
     if driver == "seatbelt":
         return _run_seatbelt(command, root, timeout)
     if driver == "srt":
-        return _run_srt(command, root, timeout, egress_allowlist or [])
+        return _run_srt(command, root, timeout, egress_allowlist or [], deny_read or [])
     if driver == "none":
         return _run_none(command, root, timeout)
     return f"ERROR: unknown sandbox driver {driver!r} (expected one of {SANDBOX_DRIVERS})."
@@ -165,19 +187,20 @@ def _run_seatbelt(command: str, root: Path, timeout: int) -> str:
 
 # ---- srt (cross-platform + egress allowlist) --------------------------------
 
-def _srt_settings(root: Path, egress_allowlist: list[str]) -> dict:
+def _srt_settings(root: Path, egress_allowlist: list[str], deny_read: list[str]) -> dict:
     return {
         "network": {"allowedDomains": list(egress_allowlist), "deniedDomains": []},
         "filesystem": {
             "allowRead": ["/"],
             "allowWrite": [str(root)],
-            "denyRead": [],
+            "denyRead": list(deny_read),
             "denyWrite": [],
         },
     }
 
 
-def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str]) -> str:
+def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str],
+             deny_read: list[str] | None = None) -> str:
     srt = shutil.which("srt")
     if not srt:
         return (
@@ -186,7 +209,7 @@ def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str]
         )
     env = _jail_env(root)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
-        json.dump(_srt_settings(root, egress_allowlist), f)
+        json.dump(_srt_settings(root, egress_allowlist, deny_read or []), f)
         settings_path = f.name
     try:
         r = subprocess.run(
