@@ -18,30 +18,77 @@ LOCK_DIR = Path("~/.boundary/locks").expanduser()
 EVENT_PENDING_DIR = Path("~/.boundary/events/pending").expanduser()
 
 
+def _proc_start(pid: int) -> str:
+    """A per-process start-time token used to defeat PID reuse. Linux: field 22
+    of /proc/<pid>/stat. Elsewhere (no /proc): empty string, so liveness falls
+    back to a PID check alone (still atomic, just can't distinguish a reused PID)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+        # comm (field 2) may contain spaces/parens; split on the last ')'.
+        tail = data[data.rfind(b")") + 2:].split()
+        return tail[19].decode()  # starttime = 22nd field overall = tail index 19
+    except (OSError, IndexError):
+        return ""
+
+
+def _lock_holder_alive(lock_path: Path) -> bool:
+    """True if the PID recorded in `lock_path` is still the same live process.
+    A dead PID, a corrupt lock, or a PID whose start-time no longer matches
+    (reuse) is treated as NOT alive, so the lock can be stolen."""
+    try:
+        lines = lock_path.read_text().splitlines()
+        pid = int(lines[0].strip())
+        recorded_start = lines[1].strip() if len(lines) > 1 else ""
+    except (ValueError, OSError, IndexError):
+        return False  # corrupt → stealable
+    if os.name == "nt":
+        # os.kill(pid, 0) on Windows TERMINATES the process rather than probing
+        # it, and there is no portable liveness check. Be conservative: treat a
+        # well-formed lock as held (never steal). A crashed run may leave a stale
+        # lock until cleared, but we never double-fire or kill a process.
+        return True
+    try:
+        os.kill(pid, 0)  # signal 0 = liveness probe, no signal sent
+    except ProcessLookupError:
+        return False  # dead
+    except PermissionError:
+        return True  # exists under another user — assume alive
+    current_start = _proc_start(pid)
+    if recorded_start and current_start and recorded_start != current_start:
+        return False  # PID reused by a different process — original holder is gone
+    return True
+
+
 def _acquire_lock(name: str) -> Path | None:
     """Return the lock path on success, None if another run holds it.
 
-    Stale-lock detection: if the PID in the lock file isn't alive, we steal it.
-    """
+    The lock file is created atomically (O_CREAT|O_EXCL) so two starts cannot both
+    win the race. If creation fails because the file exists, the holder is stolen
+    only when it is provably gone (dead PID, corrupt lock, or a reused PID whose
+    start-time no longer matches)."""
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     safe = name.replace("/", "_").replace(" ", "_")
     lock_path = LOCK_DIR / f"{safe}.lock"
-    if lock_path.exists():
+    payload = f"{os.getpid()}\n{_proc_start(os.getpid())}\n"
+    for attempt in (0, 1):
         try:
-            existing_pid = int(lock_path.read_text().strip())
-            # Signal 0 = "is this PID alive?" — no actual signal sent.
-            try:
-                os.kill(existing_pid, 0)
-                return None  # alive, lock held
-            except ProcessLookupError:
-                pass  # stale, fall through to steal
-            except PermissionError:
-                # Process exists but we can't signal it — assume alive
-                return None
-        except (ValueError, OSError):
-            pass  # corrupt lock, steal
-    lock_path.write_text(str(os.getpid()))
-    return lock_path
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if _lock_holder_alive(lock_path):
+                return None  # a live run holds it
+            if attempt == 0:
+                # Stale/reused holder — remove and retry the atomic create once.
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                continue
+            return None  # lost the steal race to another starter
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        return lock_path
+    return None
 
 
 def _release_lock(lock_path: Path | None) -> None:

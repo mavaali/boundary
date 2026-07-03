@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,6 +26,27 @@ class Workspace:
                 f"path {resolved} escapes workspace {self.root}"
             ) from e
         return resolved
+
+    def secure_open(self, path: str | Path, mode: str):
+        """Open a workspace file after the containment check, with O_NOFOLLOW on
+        the final component so a symlink swapped in AFTER `resolve()` (a
+        check-then-open TOCTOU, e.g. under best-of-K concurrency) fails with
+        ELOOP instead of following out of the jail. Supported modes: 'rb', 'w',
+        'a'. On platforms without O_NOFOLLOW (Windows, where creating a symlink
+        needs privilege anyway) it falls back to a normal open — resolve() still
+        blocks a final symlink that points outside. Residual: a parent DIRECTORY
+        swapped after resolve() is not caught (would need per-component openat)."""
+        resolved = self.resolve(path)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            return open(resolved, "rb") if mode == "rb" else open(resolved, mode, encoding="utf-8")
+        flags = {
+            "rb": os.O_RDONLY,
+            "w": os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            "a": os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        }[mode] | nofollow
+        fd = os.open(resolved, flags, 0o644)
+        return os.fdopen(fd, "rb") if mode == "rb" else os.fdopen(fd, mode, encoding="utf-8")
 
     def contains(self, path: str | Path) -> bool:
         """True iff `path`'s real location is inside the workspace root.

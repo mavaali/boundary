@@ -81,7 +81,24 @@ def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+# Characters that break out of, or are interpreted inside, the `cmd /c "..."`
+# action string. The schedule name comes from (possibly shared) YAML, so reject
+# rather than try to escape — see F9 in the security audit.
+_CMD_METACHARACTERS = set('"&|<>^%()!;`\r\n')
+
+
+def _reject_unsafe(value: str, what: str) -> None:
+    bad = sorted({c for c in value if c in _CMD_METACHARACTERS})
+    if bad:
+        raise ValueError(
+            f"{what} contains characters unsafe for the Windows scheduler action "
+            f"({bad}): {value!r}. Remove them or rename."
+        )
+
+
 def _install_common(config_path: Path, name: str, schedule: str, command: str) -> Path:
+    _reject_unsafe(name, "schedule name")
+    _reject_unsafe(str(config_path), "config path")
     label = label_for(name)
     task_name = TASK_FOLDER + label  # e.g. \boundary\io.boundary.schedule.foo
     action = _build_action(config_path, command, label)
