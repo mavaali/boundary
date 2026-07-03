@@ -27,10 +27,12 @@ def test_fs_roundtrip_still_works(tmp_path):
     ws = Workspace(tmp_path / "ws")
     reg = ToolRegistry()
     register_fs_tools(reg, ws)
-    assert reg.get("write_file").fn(path="a.txt", content="hello\n", reason="x").startswith("wrote")
+    # No newlines in the content: text-mode writes CRLF-translate on Windows,
+    # which would make an exact round-trip assertion platform-dependent.
+    assert reg.get("write_file").fn(path="a.txt", content="hello-", reason="x").startswith("wrote")
     assert reg.get("append_file").fn(path="a.txt", content="more", reason="x").startswith("appended")
     assert reg.get("edit_file").fn(path="a.txt", old_str="hello", new_str="HI", reason="x").startswith("edited")
-    assert reg.get("read_file").fn(path="a.txt") == "HI\nmore"
+    assert reg.get("read_file").fn(path="a.txt") == "HI-more"
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is POSIX-only")
@@ -90,12 +92,19 @@ def test_lock_is_exclusive_for_live_holder(tmp_path, monkeypatch):
     assert h._acquire_lock("sched") is not None  # released → acquirable again
 
 
-def test_corrupt_and_dead_locks_are_stealable(tmp_path, monkeypatch):
+def test_corrupt_lock_is_stealable(tmp_path, monkeypatch):
+    # Cross-platform: a corrupt lock is refused before any liveness probe.
     h = _fresh_lockdir(tmp_path, monkeypatch)
     (tmp_path / "locks").mkdir(parents=True)
     corrupt = tmp_path / "locks" / "c.lock"
     corrupt.write_text("not-a-pid")
     assert h._lock_holder_alive(corrupt) is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="liveness probe is POSIX; Windows never steals")
+def test_dead_pid_lock_is_stealable(tmp_path, monkeypatch):
+    h = _fresh_lockdir(tmp_path, monkeypatch)
+    (tmp_path / "locks").mkdir(parents=True)
     dead = tmp_path / "locks" / "d.lock"
     dead.write_text("999999\n\n")  # PID that (almost certainly) does not exist
     assert h._lock_holder_alive(dead) is False

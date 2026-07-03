@@ -42,6 +42,12 @@ def _lock_holder_alive(lock_path: Path) -> bool:
         recorded_start = lines[1].strip() if len(lines) > 1 else ""
     except (ValueError, OSError, IndexError):
         return False  # corrupt → stealable
+    if os.name == "nt":
+        # os.kill(pid, 0) on Windows TERMINATES the process rather than probing
+        # it, and there is no portable liveness check. Be conservative: treat a
+        # well-formed lock as held (never steal). A crashed run may leave a stale
+        # lock until cleared, but we never double-fire or kill a process.
+        return True
     try:
         os.kill(pid, 0)  # signal 0 = liveness probe, no signal sent
     except ProcessLookupError:
