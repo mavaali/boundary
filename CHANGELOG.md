@@ -19,6 +19,28 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
   `egress_uncontained` check see the driver that actually ran.
 
 ### Added
+- **Cross-run spend budgets** (`boundary/budget.py`, `SpendBudget`) — a `budget:`
+  block in a schedule/pipeline YAML bounds the SUM of run costs over calendar
+  windows (daily/weekly/monthly, calendar-reset) and a trailing rolling window,
+  aggregated over the existing run-history `runs` table (no second ledger). At
+  run time `run_headless` either skips a run whose window is already spent out
+  (`stop_reason: skipped_budget`) or clamps its per-run `max_dollars` to the
+  tightest remaining headroom, so the spend gradient/halt enforce the cross-run
+  ceiling from inside the run. `scope: workspace|global`. New `History.spend_since`
+  and a `boundary budget <yaml>` status command (exit 3 when exhausted).
+- **Spend policy gradient** (`Envelope.spend_pressure_at`, default `(0.75, 0.9)`)
+  — before the hard `budget_halt` at 100% of a spend cap, the agent is nudged
+  once at each fraction of whichever of `max_input_tokens` / `max_output_tokens`
+  / `max_dollars` is closest to breach, and a `spend_pressure` event is logged.
+  Turns the binary kill switch into a soft landing; `()` disables. Mirrors the
+  iteration `budget_pressure_at` nudge.
+- **Fail-closed pricing** (`Envelope.on_unpriced_model`, default `"max_rate"`)
+  — a model absent from the rate card previously estimated at `$0.00`, letting
+  it slip past `max_dollars` entirely (an unpriced model was an uncapped run).
+  Unknown models are now priced at a conservative upper bound so the dollar cap
+  still binds; the live banner shows `rate=fallback`. `"zero"` restores the
+  legacy fail-open behaviour; `"<model-id>"` borrows a known model's rate. New
+  helpers `Envelope.rate_for()` / `Envelope.is_priced()`.
 - **Transient-failure retry for the Anthropic and Copilot clients** — a shared
   `boundary/clients/_http.py:request_with_retry` wraps each HTTP call with bounded
   exponential backoff over retryable statuses (408/429/5xx/529) and transport

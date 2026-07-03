@@ -144,6 +144,22 @@ class History:
         cols = [c[0] for c in self._conn.execute("SELECT * FROM runs LIMIT 0").description]
         return [dict(zip(cols, r, strict=True)) for r in rows]
 
+    def spend_since(self, workspace: str | None, since: float) -> float:
+        """Sum estimated_dollars for runs with started_at >= since. The `runs`
+        table is the spend ledger — cross-run budgets aggregate over it rather
+        than a second store, so there is nothing to keep in sync. workspace=None
+        sums across every workspace (a global budget)."""
+        if workspace is None:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(estimated_dollars), 0) FROM runs WHERE started_at >= ?",
+                (since,)).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(estimated_dollars), 0) FROM runs "
+                "WHERE workspace = ? AND started_at >= ?",
+                (workspace, since)).fetchone()
+        return float(row[0] or 0.0)
+
     def runs_for_workspace(self, workspace: str, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM runs WHERE workspace=? ORDER BY started_at DESC LIMIT ?",

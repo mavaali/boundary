@@ -161,6 +161,13 @@ class Envelope:
     require_srt_for_bash: bool = False
     stop_on_ambiguity: bool = True
     budget_pressure_at: tuple[float, ...] = (0.6, 0.8)
+    # Spend policy gradient. Fractions of the binding spend cap (whichever of
+    # max_input_tokens / max_output_tokens / max_dollars is closest to breach)
+    # at which to warn the agent to converge BEFORE the hard budget_halt at 1.0
+    # — so the spend cap is a soft landing we approach deliberately, not a bare
+    # kill switch we hit blind. Empty tuple disables. Mirrors budget_pressure_at,
+    # which paces the iteration budget the same way.
+    spend_pressure_at: tuple[float, ...] = (0.75, 0.9)
     # No-progress / repeated-action detection (D). When the agent issues the same
     # tool call (name + canonical args) repeatedly it is stuck and burning budget
     # on unproductive exchanges (the ComPilot local-optima behavior). After
@@ -232,9 +239,48 @@ class Envelope:
         "gpt-4.1":             {"input": 2.0,  "cached": 0.50, "output": 8.0},
         "Qwen/Qwen2.5-Coder-32B-Instruct": {"input": 0.80, "cached": 0.80, "output": 0.80},
     })
+    # Fail-closed pricing. A model absent from token_rates would otherwise be
+    # estimated at $0.0, letting it slip past max_dollars entirely — an unpriced
+    # model is an uncapped run. Instead we price unknown models with a fallback
+    # rate so the dollar cap still binds:
+    #   "max_rate" — price at the most expensive rate in the card, per axis (a
+    #                conservative upper bound; fail-CLOSED). Default.
+    #   "zero"     — legacy behaviour: unpriced ⇒ $0.0 (fail-OPEN; max_dollars
+    #                does not bind for unlisted models). Opt in explicitly.
+    #   "<model>"  — borrow a specific model id's rate (falls back to max_rate
+    #                if that id is itself absent).
+    on_unpriced_model: str = "max_rate"
+
+    def _max_rate(self) -> dict | None:
+        if not self.token_rates:
+            return None
+        return {
+            "input": max(r["input"] for r in self.token_rates.values()),
+            "cached": max(r.get("cached", r["input"] * 0.1) for r in self.token_rates.values()),
+            "output": max(r["output"] for r in self.token_rates.values()),
+        }
+
+    def is_priced(self, model: str) -> bool:
+        """True if the model has an explicit rate (not a policy fallback)."""
+        return model in self.token_rates
+
+    def rate_for(self, model: str) -> dict | None:
+        """Resolve the USD/1M-token rate for a model, applying the
+        on_unpriced_model fallback policy. Returns None only under the
+        fail-open "zero" policy for a model with no explicit rate."""
+        r = self.token_rates.get(model)
+        if r is not None:
+            return r
+        policy = self.on_unpriced_model
+        if policy == "zero":
+            return None
+        if policy == "max_rate":
+            return self._max_rate()
+        # Borrow a named model's rate; fall back to max_rate if it too is absent.
+        return self.token_rates.get(policy) or self._max_rate()
 
     def estimate_cost(self, model: str, in_tok: int, out_tok: int, cached_tok: int = 0) -> float:
-        r = self.token_rates.get(model)
+        r = self.rate_for(model)
         if not r:
             return 0.0
         cached_rate = r.get("cached", r["input"] * 0.1)
@@ -910,6 +956,7 @@ class EnvelopeRunner:
         model_name = getattr(self.agent.client, "model", "unknown")
         pressure_iters = sorted({int(max_iters * f) for f in self.envelope.budget_pressure_at if 0 < f < 1})
         pressure_fired: set[int] = set()
+        spend_pressure_fired: set[float] = set()
         action_counts: dict[str, int] = {}
         results_by_class: dict[str, int] = {}
         no_progress_halt = False
@@ -957,6 +1004,50 @@ class EnvelopeRunner:
                 if verbose:
                     print(f"[{i}] ENVELOPE HALT: spend cap reached (in={total_in} out={total_out} ${est_dollars:.4f})")
                 break
+
+            # Spend-pressure gradient — soft landing before the hard cap. Warn
+            # the agent to converge at fractions of whichever spend cap is
+            # closest to breach, so budget_halt is a floor we approach on
+            # purpose, not a wall we hit mid-thought. Fires each threshold once;
+            # if a single step vaults past several, one nudge at the highest.
+            if self.envelope.spend_pressure_at:
+                sfracs = []
+                if self.envelope.max_input_tokens:
+                    sfracs.append(total_in / self.envelope.max_input_tokens)
+                if self.envelope.max_output_tokens:
+                    sfracs.append(total_out / self.envelope.max_output_tokens)
+                if self.envelope.max_dollars:
+                    sfracs.append(est_dollars / self.envelope.max_dollars)
+                spend_frac = max(sfracs) if sfracs else 0.0
+                crossed = [t for t in self.envelope.spend_pressure_at
+                           if 0 < t < 1 and spend_frac >= t and t not in spend_pressure_fired]
+                if crossed:
+                    spend_pressure_fired.update(crossed)
+                    cap_bits = []
+                    if self.envelope.max_dollars:
+                        cap_bits.append(f"${est_dollars:.4f}/${self.envelope.max_dollars:.2f}")
+                    if self.envelope.max_input_tokens:
+                        cap_bits.append(f"{total_in:,}/{self.envelope.max_input_tokens:,} in")
+                    if self.envelope.max_output_tokens:
+                        cap_bits.append(f"{total_out:,}/{self.envelope.max_output_tokens:,} out")
+                    spend_nudge = (
+                        f"[envelope] spend at {int(spend_frac * 100)}% of cap "
+                        f"({', '.join(cap_bits)}). Converge now: finish your current "
+                        f"write and stop before the budget halts the run."
+                    )
+                    messages.append(Message(role="user", content=spend_nudge))
+                    events.append(EnvelopeEvent(
+                        "spend_pressure", "model",
+                        f"frac={spend_frac:.2f} in={total_in} out={total_out} est=${est_dollars:.4f}", i,
+                    ))
+                    if self.agent.transcript:
+                        self.agent.transcript.log("spend_pressure",
+                            iteration=i, spend_fraction=round(spend_frac, 4),
+                            input_tokens=total_in, output_tokens=total_out,
+                            estimated_dollars=est_dollars, nudge=spend_nudge,
+                        )
+                    if verbose:
+                        print(f"[{i}] {spend_nudge}")
 
             # Budget-pressure nudge
             for pi in pressure_iters:
@@ -1105,6 +1196,8 @@ class EnvelopeRunner:
                     banner_bits.append(f"appends {appends_used}/{self.envelope.max_appends}")
                 if self.envelope.max_dollars is not None:
                     banner_bits.append(f"cap ${self.envelope.max_dollars:.2f}")
+                if not self.envelope.is_priced(model_name) and self.envelope.on_unpriced_model != "zero":
+                    banner_bits.append("rate=fallback")
                 if ext_used:
                     banner_bits.append(f"ext {ext_used}/{self.envelope.max_external}")
                 banner = "[ENVELOPE: " + " | ".join(banner_bits) + "]"

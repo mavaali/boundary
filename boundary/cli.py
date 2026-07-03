@@ -163,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     state_p.add_argument("--write", action="store_true", help="write STATE.md into the workspace root")
     state_p.add_argument("--last-n", type=int, default=5, help="how many recent runs to summarize")
 
+    budget_p = sub.add_parser("budget", help="show cross-run spend budget status for a schedule/pipeline YAML")
+    budget_p.add_argument("config", help="path to a schedule or pipeline YAML carrying a budget: block")
+
     disc = sub.add_parser("discover", help="scan a source for work and emit tasks (Discover beat); dry-run by default")
     disc.add_argument("workspace", nargs="?", default=".", help="workspace path (default: .)")
     disc.add_argument("--source", default="markers", help="work source (markers | fabricspecs_questions)")
@@ -629,6 +632,37 @@ def main(argv: list[str] | None = None) -> int:
                   f"stop={r['stop_reason']:14s} umpire={verdict:5s} "
                   f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s{downgrade}")
         return 0
+
+    if args.cmd == "budget":
+        from boundary.budget import SpendBudget, evaluate_budget
+        from boundary.history import History
+        from boundary.schedule import ScheduleConfig
+        # Key the ledger query on the RAW workspace string — run_headless records
+        # runs under str(config.workspace) unexpanded, so we must match it (not
+        # expanduser()) or the aggregation would miss every recorded run.
+        try:
+            cfg = ScheduleConfig.load(args.config)
+            budget = cfg.spend_budget
+            workspace = str(cfg.workspace)
+        except KeyError:
+            # Not a schedule YAML — try a pipeline (budget lives under defaults).
+            from boundary.pipeline import PipelineConfig
+            pc = PipelineConfig.load(args.config)
+            budget = SpendBudget.from_config(pc.defaults.get("budget"))
+            workspace = str(pc.workspace)
+        if not budget or not budget.is_active():
+            print("(no budget configured — add a `budget:` block to the YAML)")
+            return 0
+        h = History()
+        st = evaluate_budget(budget, h, workspace)
+        print(f"budget  scope={budget.scope}  workspace={workspace}")
+        for name, w in st.windows.items():
+            tail = "OVER CAP" if w["remaining"] <= 0 else f"${w['remaining']:.4f} left"
+            print(f"  {name:8s} ${w['spent']:.4f} / ${w['cap']:.2f}   {tail}")
+        verdict = "EXHAUSTED" if st.exhausted else "ok"
+        print(f"  -> {verdict}; binding={st.binding}; "
+              f"next run capped at ${st.remaining:.4f}")
+        return 0 if not st.exhausted else 3
 
     if args.cmd == "review-queue":
         import datetime as _dt

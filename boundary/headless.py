@@ -261,6 +261,33 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     review_id: int | None = None
     discovered_tasks: list = []
 
+    # Cross-run spend budget gate. The `runs` table is the spend ledger; aggregate
+    # prior spend over the configured windows and either (a) skip this run when a
+    # window is already spent out — before any cost is incurred — or (b) clamp this
+    # run's per-run max_dollars to the tightest remaining headroom, so the
+    # envelope's spend gradient + hard halt keep the run inside the cross-run
+    # ceiling. See boundary/budget.py.
+    effective_max_dollars = config.max_dollars
+    _budget = getattr(config, "spend_budget", None)
+    if _budget is not None and _budget.is_active():
+        from boundary.budget import evaluate_budget
+        _bstatus = evaluate_budget(_budget, history, str(config.workspace))
+        if _bstatus.exhausted:
+            history.close()
+            _release_lock(lock_path)
+            return {
+                "run_id": None, "review_id": None, "stop_reason": "skipped_budget",
+                "third_umpire_verdict": None, "transcript": None, "writes": 0,
+                "tokens_in": 0, "tokens_out": 0, "dollars": 0.0, "wall_seconds": 0.0,
+                "written_files": [], "budget": _bstatus.as_dict(),
+                "error": (f"spend budget exhausted: {_bstatus.binding} window "
+                          f"${_bstatus.spent_binding:.4f}/${_bstatus.cap_binding:.2f}"),
+            }
+        effective_max_dollars = (
+            _bstatus.remaining if effective_max_dollars is None
+            else min(effective_max_dollars, _bstatus.remaining)
+        )
+
     try:
         workspace = Path(config.workspace).expanduser()
         squad_dir = workspace / ".squad" / "agents"
@@ -337,7 +364,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             max_unstaged_reads=config.max_unstaged_reads,
             max_input_tokens=config.max_input_tokens,
             max_output_tokens=config.max_output_tokens,
-            max_dollars=config.max_dollars,
+            max_dollars=effective_max_dollars,
             max_wall_seconds=config.max_wall_seconds,
             stop_on_ambiguity=stop_on_ambiguity,
             on_commit=config.on_commit,

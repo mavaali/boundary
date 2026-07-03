@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 import yaml
 
+from boundary.budget import SpendBudget
+
 AmbiguityPolicy = Literal["queue", "fail", "best_effort"]
 FailurePolicy = Literal["digest", "silent", "email"]
 CommitPolicy = Literal["refuse", "queue", "allow"]
@@ -72,6 +74,10 @@ class ScheduleConfig:
     # Declarative trigger rules: turn this run's outcome into new queued tasks
     # (results->tasks loop). Tasks are enqueued pending, never auto-dispatched.
     triggers: list = field(default_factory=list)
+    # Cross-run spend budget (see boundary/budget.py). Bounds the SUM of run
+    # costs over calendar/rolling windows, not just one run. None = no ceiling
+    # beyond the per-run max_dollars. Parsed from the YAML `budget:` block.
+    spend_budget: Any = None  # budget.SpendBudget | None
 
     @classmethod
     def load(cls, path: str | Path) -> ScheduleConfig:
@@ -114,6 +120,7 @@ class ScheduleConfig:
             discover=data.get("discover"),
             write_profile=data.get("write_profile", "synthesis" if data.get("discover") else "edit"),
             triggers=list(data.get("triggers", []) or []),
+            spend_budget=SpendBudget.from_config(data.get("budget")),
         )
 
     def render_template(self, s: str, now: _dt.datetime | None = None) -> str:

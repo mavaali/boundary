@@ -689,6 +689,8 @@ tainted run under a non-`srt` driver also gets an `egress_uncontained` **fail**.
 | `max_external` | 20 | `--envelope-max-external N` |
 | `repeat_warn` / `repeat_halt` | 3 / 5 | envelope fields (`repeat_halt=0` disables) |
 | `nudge_on_early_stop` | True | envelope field |
+| `spend_pressure_at` | (0.75, 0.9) | envelope field (`()` disables) |
+| `on_unpriced_model` | `"max_rate"` | envelope field (`"zero"` = legacy) |
 
 ### What things actually cost (Sonnet 4.5)
 
@@ -705,6 +707,73 @@ boundary run ... --envelope-max-dollars 0.25
 ```
 
 Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact spend.
+
+### Cross-run budgets (daily / weekly / monthly / rolling)
+
+The caps above bound **one run**. A schedule firing hourly at `max_dollars:
+0.50` has no ceiling on the *sum* — 24 runs is a $12 day nobody approved. A
+`budget:` block adds that ceiling, aggregated over the run-history ledger (the
+`runs` table — the same source `boundary history` reads, so there's no second
+store to reconcile):
+
+```yaml
+# in a schedule or pipeline YAML
+budget:
+  daily: 5.00        # $/calendar day (resets local midnight)
+  weekly: 20.00      # $/calendar week (resets Monday)
+  monthly: 60.00     # $/calendar month (resets the 1st)
+  rolling: 3.00      # $ over a trailing window...
+  rolling_hours: 6   # ...this many hours (default 24)
+  scope: workspace   # "workspace" (default) or "global" (all workspaces)
+```
+
+Any subset of windows may be set. Two things happen at run time:
+
+- **Pre-run gate.** If any active window is already at/over its cap, the run is
+  skipped *before any spend* with `stop_reason: skipped_budget`.
+- **Headroom clamp.** Otherwise the run's per-run `max_dollars` is clamped to
+  the tightest remaining headroom, so the spend gradient + hard halt above keep
+  the run inside the cross-run ceiling — a run can approach a window's cap but
+  never carry it past.
+
+Inspect current status any time:
+
+```bash
+boundary budget path/to/schedule.yaml
+#  daily    $0.7200 / $1.00   $0.2800 left
+#  -> ok; binding=daily; next run capped at $0.2800
+```
+
+Exit code is `3` when a window is exhausted, so cron/CI can branch on it. Only
+runs recorded to history count (scheduled/pipeline/`schedule-run`); ad-hoc
+`boundary run` prints its cost but does not accrue against a budget.
+
+### Spend gradient, not a bare kill switch
+
+`max_dollars` / `max_input_tokens` / `max_output_tokens` are hard floors: at
+100% the run stops with `stop_reason: budget_halt`. But hitting a cap
+mid-thought wastes the tokens already spent on an unfinished write. So the
+envelope approaches the cap deliberately: at each `spend_pressure_at` fraction
+(default 75% and 90%) of whichever cap is closest to breach, it nudges the agent
+once — *"spend at 90% of cap … converge now: finish your current write and
+stop"* — and logs a `spend_pressure` event. Set `spend_pressure_at=()` to
+disable and keep only the hard halt.
+
+### Fail-closed pricing
+
+The dollar cap can only bind for a model the rate card (`Envelope.token_rates`)
+knows. An **unlisted** model would otherwise estimate at $0.00 and sail past
+`max_dollars` — an unpriced model is an uncapped run. `on_unpriced_model`
+controls the fallback:
+
+- `"max_rate"` (default) — price an unknown model at the most expensive rate in
+  the card, per axis: a conservative upper bound, so the cap still bites. The
+  live banner shows `rate=fallback` while it is in effect.
+- `"zero"` — legacy fail-**open**: unknown model ⇒ $0.00. Opt in explicitly.
+- `"<model-id>"` — borrow a specific known model's rate.
+
+Keep the card current (`token_rates` in `boundary/envelope.py`) so runs price on
+real rates rather than the conservative fallback.
 
 ### No-progress detection & early-stop nudge
 
