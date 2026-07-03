@@ -213,6 +213,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--egress-allow", action="append", default=[],
                      help="under --sandbox-driver srt, allow network egress to this domain "
                           "(repeat for multiple). Empty = no network. Supports wildcards like *.example.com")
+    run.add_argument("--deny-read", action="append", default=[], metavar="PATH",
+                     help="hide PATH from the jailed bash process (repeat for multiple). "
+                          "Only enforced under --sandbox-driver srt.")
+    run.add_argument("--deny-read-secrets", action="store_true",
+                     help="also hide a built-in set of common credential locations "
+                          "(~/.aws, ~/.ssh, ~/.config/gh, ...). Only enforced under srt.")
+    run.add_argument("--require-srt-for-bash", action="store_true",
+                     help="refuse the bash tool unless the sandbox driver is srt (egress-bounded). "
+                          "seatbelt/none do not contain egress.")
     run.add_argument("--persona", help="path to a persona charter.md to load as system prompt (Clawpilot adapter)")
     run.add_argument("--web", action="store_true", help="enable fetch_url tool")
     run.add_argument("--clawpilot", action="store_true", help="enable skill_load/charter_load/workiq bridge tools")
@@ -708,6 +717,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.cmd == "run":
+        from boundary.tools.sandbox import default_deny_read
+        deny_read = (default_deny_read() if args.deny_read_secrets else []) + list(args.deny_read)
         overlay = Overlay.load(args.overlay) if args.overlay else None
         workspace = overlay.workspace_or(args.workspace) if overlay else args.workspace
         persona_path = args.persona
@@ -739,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_iters=args.max_iters,
                     sandbox_driver=args.sandbox_driver,
                     egress_allowlist=args.egress_allow,
+                    deny_read=deny_read,
                 )
             if args.system_file:
                 system_prompt = Path(args.system_file).expanduser().read_text(encoding="utf-8")
@@ -762,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iters=args.max_iters,
                 sandbox_driver=args.sandbox_driver,
                 egress_allowlist=args.egress_allow,
+                deny_read=deny_read,
             )
 
         # Best-of-K branch (feature C): fan out K runs and select a winner.
@@ -792,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
                 on_commit=on_commit,
                 commit_allowlist=commit_allowlist,
                 on_taint=args.on_taint,
+                require_srt_for_bash=args.require_srt_for_bash,
             )
             k = args.runs
 
@@ -844,6 +858,7 @@ def main(argv: list[str] | None = None) -> int:
                     on_commit=on_commit,
                     commit_allowlist=commit_allowlist,
                     on_taint=args.on_taint,
+                    require_srt_for_bash=args.require_srt_for_bash,
                 )
                 runner = EnvelopeRunner(agent, env)
                 result = runner.run(args.task, verbose=args.verbose)

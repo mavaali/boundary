@@ -34,7 +34,8 @@ containment — and egress containment has holes (F4, F5, F7).
 ## Findings
 
 **Remediation status:** F1 and F4 fixed in #21; F2, F3, F11 fixed in #22; F5
-fixed in the SSRF follow-up. F6–F10 remain open.
+fixed in #23; F6 and F7 addressed via opt-in controls (`deny_read` /
+`--deny-read-secrets` and `require_srt_for_bash`). F8–F10 remain open.
 
 | ID | Severity | Status | Title | Guarantee eroded |
 |----|----------|--------|-------|------------------|
@@ -43,8 +44,8 @@ fixed in the SSRF follow-up. F6–F10 remain open.
 | F5 | **High** | ✅ fixed | `fetch_url` SSRF: no scheme/host validation, follows redirects | Egress containment |
 | F2 | **High** | ✅ fixed (P1) | `writable_paths` allowlist is far looser than declared (`*` spans `/`, `..` not neutralized) | Write-jail scope |
 | F3 | **Medium** | ✅ fixed (P1) | Envelope write-gate dispatches on tool *name*, not *kind* — latent bypass | Write-jail |
-| F7 | **Medium** | open | Commit-class bash denylist is trivially bypassable | No unapproved actions |
-| F6 | **Medium** | open | No general read boundary for bash; on-disk secrets are in scope | (amplifier) |
+| F7 | **Medium** | ✅ opt-in | Commit-class bash denylist is trivially bypassable | No unapproved actions |
+| F6 | **Medium** | ✅ opt-in | No general read boundary for bash; on-disk secrets are in scope | (amplifier) |
 | F8 | **Low** | open | TOCTOU between `Workspace.resolve()` and the actual open | Read/Write-jail |
 | F9 | **Low** | open | Windows scheduler builds a `cmd /c` string with interpolated, unvalidated values | Local integrity |
 | F10 | **Low** | open | Headless run-lock has a TOCTOU race / PID-reuse steal | Concurrency safety |

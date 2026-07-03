@@ -12,7 +12,7 @@ from boundary.tools.sandbox import SANDBOX_DRIVERS, resolve_auto_driver
 
 
 def _reset_warn():
-    sb._AUTO_WARNED = False
+    sb._WARNED_MESSAGES.clear()
 
 
 def test_auto_is_a_known_driver():

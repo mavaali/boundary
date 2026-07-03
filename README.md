@@ -49,9 +49,22 @@ pluggable sandbox driver (`--sandbox-driver`):
   strict — it fails loudly if srt is absent rather than degrading.
 - `none` — no sandbox.
 
+Two opt-in controls harden the posture further (both enforced only under `srt`
+for reads / require `srt` for bash respectively):
+
+- `--deny-read <path>` (repeatable) hides paths from the jailed bash process, and
+  `--deny-read-secrets` also hides a built-in set of common credential locations
+  (`~/.aws`, `~/.ssh`, `~/.config/gh`, …). In a schedule YAML: `deny_read: [...]`
+  and `deny_read_secrets: true`. Reads are unrestricted on `seatbelt`/`none`, so
+  the denylist is enforced only under `srt` (other drivers warn).
+- `--require-srt-for-bash` (envelope `require_srt_for_bash: true`) refuses the
+  `bash` tool unless the driver is `srt`. `seatbelt`/`none` do not bound egress,
+  and the commit-class bash denylist is a nudge, not a boundary — this makes a
+  run fail closed rather than shell out with uncontained egress.
+
 For sensitive work, prefer `--sandbox-driver srt` with a tight egress allowlist
-(or run as a dedicated OS user / inside a container), and disable shell or web
-tools when they are not needed.
+(or run as a dedicated OS user / inside a container), add `--deny-read-secrets`
+and `--require-srt-for-bash`, and disable shell or web tools when not needed.
 
 ## Where Boundary sits
 
