@@ -33,9 +33,9 @@ containment — and egress containment has holes (F4, F5, F7).
 
 ## Findings
 
-**Remediation status:** F1 and F4 fixed in #21; F2, F3, F11 fixed in #22; F5
-fixed in #23; F6 and F7 addressed via opt-in controls (`deny_read` /
-`--deny-read-secrets` and `require_srt_for_bash`). F8–F10 remain open.
+**Remediation status:** F1/F4 fixed in #21; F2/F3/F11 in #22; F5 in #23; F6/F7
+via opt-in controls in #24; F8–F10 hardened in the lows batch. Every finding
+except F12 (informational — inherent prompt injection) is now addressed.
 
 | ID | Severity | Status | Title | Guarantee eroded |
 |----|----------|--------|-------|------------------|
@@ -46,9 +46,9 @@ fixed in #23; F6 and F7 addressed via opt-in controls (`deny_read` /
 | F3 | **Medium** | ✅ fixed (P1) | Envelope write-gate dispatches on tool *name*, not *kind* — latent bypass | Write-jail |
 | F7 | **Medium** | ✅ opt-in | Commit-class bash denylist is trivially bypassable | No unapproved actions |
 | F6 | **Medium** | ✅ opt-in | No general read boundary for bash; on-disk secrets are in scope | (amplifier) |
-| F8 | **Low** | open | TOCTOU between `Workspace.resolve()` and the actual open | Read/Write-jail |
-| F9 | **Low** | open | Windows scheduler builds a `cmd /c` string with interpolated, unvalidated values | Local integrity |
-| F10 | **Low** | open | Headless run-lock has a TOCTOU race / PID-reuse steal | Concurrency safety |
+| F8 | **Low** | ✅ fixed | TOCTOU between `Workspace.resolve()` and the actual open | Read/Write-jail |
+| F9 | **Low** | ✅ fixed | Windows scheduler builds a `cmd /c` string with interpolated, unvalidated values | Local integrity |
+| F10 | **Low** | ✅ fixed | Headless run-lock has a TOCTOU race / PID-reuse steal | Concurrency safety |
 | F11 | **Low** | ✅ fixed (P1) | `path_allowed` uses case-folding `fnmatch`, widening the allowlist on macOS/Windows | Write-jail scope |
 | F12 | **Info** | — | Untrusted content (web + discover sources) steers the agent (prompt injection) | Taint awareness |
 

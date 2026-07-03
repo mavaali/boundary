@@ -23,7 +23,11 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
             return f"ERROR: file not found: {path}"
         if not p.is_file():
             return f"ERROR: not a regular file: {path}"
-        data = p.read_bytes()[:MAX_READ_BYTES]
+        try:
+            with workspace.secure_open(path, "rb") as f:
+                data = f.read(MAX_READ_BYTES)
+        except OSError as e:
+            return f"ERROR: cannot read {path}: {e}"
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
@@ -46,7 +50,8 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
     def write_file(path: str, content: str, reason: str = "") -> str:
         p = workspace.resolve(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        with workspace.secure_open(path, "w") as f:
+            f.write(content)
         return f"wrote {len(content)} chars to {p.relative_to(workspace.root)}"
 
     @registry.add(
@@ -69,7 +74,7 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
             return f"ERROR: file not found: {path} — append_file requires a prior write_file"
         if not p.is_file():
             return f"ERROR: not a regular file: {path}"
-        with p.open("a", encoding="utf-8") as f:
+        with workspace.secure_open(path, "a") as f:
             f.write(content)
         return f"appended {len(content)} chars to {p.relative_to(workspace.root)}"
 
@@ -92,13 +97,15 @@ def register_fs_tools(registry: ToolRegistry, workspace: Workspace) -> None:
         p = workspace.resolve(path)
         if not p.exists():
             return f"ERROR: file not found: {path}"
-        text = p.read_text(encoding="utf-8")
+        with workspace.secure_open(path, "rb") as f:
+            text = f.read().decode("utf-8")
         count = text.count(old_str)
         if count == 0:
             return "ERROR: old_str not found"
         if count > 1:
             return f"ERROR: old_str matches {count} times; needs to be unique"
-        p.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+        with workspace.secure_open(path, "w") as f:
+            f.write(text.replace(old_str, new_str, 1))
         return f"edited {p.relative_to(workspace.root)}"
 
     @registry.add(
