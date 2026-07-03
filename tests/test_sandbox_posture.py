@@ -24,7 +24,8 @@ from boundary.tools.sandbox import _srt_settings, default_deny_read, run_sandbox
 
 def test_default_deny_read_covers_common_secrets():
     d = default_deny_read()
-    joined = "\n".join(d)
+    # normalize separators: Path.home() joins render with '\' on Windows.
+    joined = "\n".join(d).replace("\\", "/")
     for needle in [".aws", ".ssh", ".config/gh", "/etc/shadow"]:
         assert needle in joined
 
@@ -32,7 +33,8 @@ def test_default_deny_read_covers_common_secrets():
 def test_srt_settings_wires_deny_read():
     s = _srt_settings(Path("/tmp/ws"), ["example.com"], ["/home/u/.aws", "/etc/shadow"])
     assert s["filesystem"]["denyRead"] == ["/home/u/.aws", "/etc/shadow"]
-    assert s["filesystem"]["allowWrite"] == ["/tmp/ws"]
+    # allowWrite is str(root); normalize since Windows renders '\tmp\ws'.
+    assert s["filesystem"]["allowWrite"][0].replace("\\", "/") == "/tmp/ws"
 
 
 def test_deny_read_on_non_srt_driver_warns(tmp_path):
