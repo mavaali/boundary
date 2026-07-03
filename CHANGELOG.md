@@ -19,6 +19,15 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
   `egress_uncontained` check see the driver that actually ran.
 
 ### Added
+- **Cross-run spend budgets** (`boundary/budget.py`, `SpendBudget`) — a `budget:`
+  block in a schedule/pipeline YAML bounds the SUM of run costs over calendar
+  windows (daily/weekly/monthly, calendar-reset) and a trailing rolling window,
+  aggregated over the existing run-history `runs` table (no second ledger). At
+  run time `run_headless` either skips a run whose window is already spent out
+  (`stop_reason: skipped_budget`) or clamps its per-run `max_dollars` to the
+  tightest remaining headroom, so the spend gradient/halt enforce the cross-run
+  ceiling from inside the run. `scope: workspace|global`. New `History.spend_since`
+  and a `boundary budget <yaml>` status command (exit 3 when exhausted).
 - **Spend policy gradient** (`Envelope.spend_pressure_at`, default `(0.75, 0.9)`)
   — before the hard `budget_halt` at 100% of a spend cap, the agent is nudged
   once at each fraction of whichever of `max_input_tokens` / `max_output_tokens`

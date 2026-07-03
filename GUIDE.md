@@ -708,6 +708,46 @@ boundary run ... --envelope-max-dollars 0.25
 
 Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact spend.
 
+### Cross-run budgets (daily / weekly / monthly / rolling)
+
+The caps above bound **one run**. A schedule firing hourly at `max_dollars:
+0.50` has no ceiling on the *sum* — 24 runs is a $12 day nobody approved. A
+`budget:` block adds that ceiling, aggregated over the run-history ledger (the
+`runs` table — the same source `boundary history` reads, so there's no second
+store to reconcile):
+
+```yaml
+# in a schedule or pipeline YAML
+budget:
+  daily: 5.00        # $/calendar day (resets local midnight)
+  weekly: 20.00      # $/calendar week (resets Monday)
+  monthly: 60.00     # $/calendar month (resets the 1st)
+  rolling: 3.00      # $ over a trailing window...
+  rolling_hours: 6   # ...this many hours (default 24)
+  scope: workspace   # "workspace" (default) or "global" (all workspaces)
+```
+
+Any subset of windows may be set. Two things happen at run time:
+
+- **Pre-run gate.** If any active window is already at/over its cap, the run is
+  skipped *before any spend* with `stop_reason: skipped_budget`.
+- **Headroom clamp.** Otherwise the run's per-run `max_dollars` is clamped to
+  the tightest remaining headroom, so the spend gradient + hard halt above keep
+  the run inside the cross-run ceiling — a run can approach a window's cap but
+  never carry it past.
+
+Inspect current status any time:
+
+```bash
+boundary budget path/to/schedule.yaml
+#  daily    $0.7200 / $1.00   $0.2800 left
+#  -> ok; binding=daily; next run capped at $0.2800
+```
+
+Exit code is `3` when a window is exhausted, so cron/CI can branch on it. Only
+runs recorded to history count (scheduled/pipeline/`schedule-run`); ad-hoc
+`boundary run` prints its cost but does not accrue against a budget.
+
 ### Spend gradient, not a bare kill switch
 
 `max_dollars` / `max_input_tokens` / `max_output_tokens` are hard floors: at

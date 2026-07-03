@@ -10,6 +10,7 @@ from typing import Any, Literal
 import yaml
 
 from boundary.agent import Agent
+from boundary.budget import SpendBudget
 from boundary.envelope import Envelope, EnvelopeRunner
 from boundary.headless import run_headless
 from boundary.history import History
@@ -153,6 +154,10 @@ class PipelineConfig:
             model=step.model or self.model,
             notify=step.notify if step.notify is not None else self.notify,
             enabled=self.enabled,
+            # A pipeline-wide budget: every step records spend to the same
+            # workspace, so a workspace-scoped budget on each step config
+            # aggregates across the whole pipeline (and across its repeat runs).
+            spend_budget=SpendBudget.from_config(self.defaults.get("budget")),
         )
 
     def validate(self) -> list[str]:
