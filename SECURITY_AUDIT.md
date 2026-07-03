@@ -33,15 +33,14 @@ containment — and egress containment has holes (F4, F5, F7).
 
 ## Findings
 
-**Remediation status:** F1 and F4 fixed in #21; F2 and F3 fixed in the P1
-follow-up (also closes F11 as a side effect of case-sensitive matching). F5 and
-F6–F10 remain open.
+**Remediation status:** F1 and F4 fixed in #21; F2, F3, F11 fixed in #22; F5
+fixed in the SSRF follow-up. F6–F10 remain open.
 
 | ID | Severity | Status | Title | Guarantee eroded |
 |----|----------|--------|-------|------------------|
 | F1 | **Critical** | ✅ fixed (#21) | `grep`/`glob`/`count_matches` escape the read-jail via `../` in the glob (and via planted symlinks) | Read-jail |
 | F4 | **High** | ✅ fixed (#21) | `fetch_url` bypasses the srt egress allowlist entirely | Egress containment |
-| F5 | **High** | open | `fetch_url` SSRF: no scheme/host validation, follows redirects | Egress containment |
+| F5 | **High** | ✅ fixed | `fetch_url` SSRF: no scheme/host validation, follows redirects | Egress containment |
 | F2 | **High** | ✅ fixed (P1) | `writable_paths` allowlist is far looser than declared (`*` spans `/`, `..` not neutralized) | Write-jail scope |
 | F3 | **Medium** | ✅ fixed (P1) | Envelope write-gate dispatches on tool *name*, not *kind* — latent bypass | Write-jail |
 | F7 | **Medium** | open | Commit-class bash denylist is trivially bypassable | No unapproved actions |
