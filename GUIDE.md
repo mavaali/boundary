@@ -689,6 +689,8 @@ tainted run under a non-`srt` driver also gets an `egress_uncontained` **fail**.
 | `max_external` | 20 | `--envelope-max-external N` |
 | `repeat_warn` / `repeat_halt` | 3 / 5 | envelope fields (`repeat_halt=0` disables) |
 | `nudge_on_early_stop` | True | envelope field |
+| `spend_pressure_at` | (0.75, 0.9) | envelope field (`()` disables) |
+| `on_unpriced_model` | `"max_rate"` | envelope field (`"zero"` = legacy) |
 
 ### What things actually cost (Sonnet 4.5)
 
@@ -705,6 +707,33 @@ boundary run ... --envelope-max-dollars 0.25
 ```
 
 Third Umpire reports `budget_halt` as WARN if the run was cut off, plus exact spend.
+
+### Spend gradient, not a bare kill switch
+
+`max_dollars` / `max_input_tokens` / `max_output_tokens` are hard floors: at
+100% the run stops with `stop_reason: budget_halt`. But hitting a cap
+mid-thought wastes the tokens already spent on an unfinished write. So the
+envelope approaches the cap deliberately: at each `spend_pressure_at` fraction
+(default 75% and 90%) of whichever cap is closest to breach, it nudges the agent
+once — *"spend at 90% of cap … converge now: finish your current write and
+stop"* — and logs a `spend_pressure` event. Set `spend_pressure_at=()` to
+disable and keep only the hard halt.
+
+### Fail-closed pricing
+
+The dollar cap can only bind for a model the rate card (`Envelope.token_rates`)
+knows. An **unlisted** model would otherwise estimate at $0.00 and sail past
+`max_dollars` — an unpriced model is an uncapped run. `on_unpriced_model`
+controls the fallback:
+
+- `"max_rate"` (default) — price an unknown model at the most expensive rate in
+  the card, per axis: a conservative upper bound, so the cap still bites. The
+  live banner shows `rate=fallback` while it is in effect.
+- `"zero"` — legacy fail-**open**: unknown model ⇒ $0.00. Opt in explicitly.
+- `"<model-id>"` — borrow a specific known model's rate.
+
+Keep the card current (`token_rates` in `boundary/envelope.py`) so runs price on
+real rates rather than the conservative fallback.
 
 ### No-progress detection & early-stop nudge
 
