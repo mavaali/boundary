@@ -8,6 +8,14 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Added
+- **Cost attribution on the interactive `boundary run` path** — envelope-mode
+  interactive runs now record an `(adhoc)` row to the history ledger carrying
+  `--attribution key=value` tags (repeatable), so ad-hoc spend shows in
+  `boundary history` and is sliceable by attribution / tag-scoped budgets
+  alongside scheduled runs. Ledger writes are best-effort (a failure prints a
+  note, never crashes the run) and interactive runs remain budget-*ungated*.
+
 ## [0.11.0] - 2026-07-03
 
 ### Changed

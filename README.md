@@ -178,6 +178,15 @@ budget:
   scope: "tag:tenant"   # one $50/mo budget PER tenant, summed across workspaces
 ```
 
+Interactive runs can be tagged too — envelope-mode `boundary run` records an
+`(adhoc)` ledger row carrying `--attribution key=value` tags, so ad-hoc spend is
+sliceable alongside scheduled runs:
+
+```bash
+boundary run ... --envelope-writable scratch/note.md \
+  --attribution tenant=acme --attribution project=pricing --task "..."
+```
+
 Inspect any config's live status (exit code `3` when a window is exhausted, so
 cron/CI can branch on it):
 
