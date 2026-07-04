@@ -23,6 +23,34 @@ def test_known_model_prices_unchanged():
     assert abs(e.estimate_cost("claude-sonnet-4.5", 1_000_000, 1_000_000) - 18.0) < 1e-9
 
 
+def test_cache_write_priced_at_premium_not_fresh_input():
+    e = Envelope()
+    # 1M tokens, all of it a cache WRITE. Sonnet write rate is $3.75/1M (1.25×
+    # the $3 input rate), so it must cost more than pricing it as fresh input.
+    all_write = e.estimate_cost("claude-sonnet-4.5", 1_000_000, 0,
+                                cached_tok=0, cache_write_tok=1_000_000)
+    assert abs(all_write - 3.75) < 1e-9
+    as_fresh = e.estimate_cost("claude-sonnet-4.5", 1_000_000, 0)  # the old undercount
+    assert as_fresh == 3.0
+    assert all_write > as_fresh
+
+
+def test_cost_splits_fresh_read_and_write():
+    e = Envelope()
+    # Total 1M input = 400K fresh + 400K read + 200K write, on sonnet:
+    #   fresh 0.4M × $3 = 1.20 ; read 0.4M × $0.30 = 0.12 ; write 0.2M × $3.75 = 0.75
+    cost = e.estimate_cost("claude-sonnet-4.5", 1_000_000, 0,
+                           cached_tok=400_000, cache_write_tok=200_000)
+    assert abs(cost - (1.20 + 0.12 + 0.75)) < 1e-9
+
+
+def test_cache_write_defaults_to_1_25x_when_absent():
+    # A model with no explicit cache_write falls back to 1.25× input.
+    e = Envelope(token_rates={"m": {"input": 10.0, "cached": 1.0, "output": 20.0}})
+    cost = e.estimate_cost("m", 1_000_000, 0, cache_write_tok=1_000_000)
+    assert abs(cost - 12.5) < 1e-9  # 1.25 × $10
+
+
 def test_unpriced_model_is_not_free_by_default():
     e = Envelope()
     assert not e.is_priced("some-new-model-v9")
@@ -183,6 +211,39 @@ def test_degrade_swaps_model_and_stretches_budget(tmp_path):
     assert res.loop_result.iterations > 6
     # The client's model attribute was actually swapped.
     assert client.model == "gpt-5.4"
+
+
+def test_chatresponse_carries_cache_creation_field():
+    from boundary.clients.base import ChatResponse, Message
+    r = ChatResponse(message=Message(role="assistant"), finish_reason="stop")
+    assert r.cache_creation_input_tokens == 0  # default
+    r2 = ChatResponse(message=Message(role="assistant"), finish_reason="stop",
+                      input_tokens=100, cache_creation_input_tokens=40)
+    assert r2.cache_creation_input_tokens == 40
+
+
+class _CacheWriteClient:
+    """One response: all input is a cache WRITE, then stops."""
+    model = "claude-sonnet-4.5"
+
+    def chat(self, messages, tools=None, **kw):
+        from boundary.clients.base import ChatResponse, Message
+        return ChatResponse(
+            message=Message(role="assistant", content="done"),
+            finish_reason="stop",
+            input_tokens=1_000_000, output_tokens=0,
+            cached_input_tokens=0, cache_creation_input_tokens=1_000_000,
+        )
+
+
+def test_run_prices_cache_writes_at_premium(tmp_path):
+    # End-to-end: the loop must price the 1M cache-write tokens at sonnet's
+    # $3.75/1M premium ($3.75), not the $3.00 fresh-input undercount.
+    env = Envelope(writable_paths=["out.md"], require_staging=False,
+                   min_writes=0, nudge_on_early_stop=False, max_dollars=None)
+    res = EnvelopeRunner(_agent(tmp_path, _CacheWriteClient()), env).run("go")
+    assert abs(res.estimated_dollars - 3.75) < 1e-9
+    assert res.estimated_dollars > 3.0  # would be exactly 3.0 under the old model
 
 
 def test_no_degrade_when_unconfigured(tmp_path):

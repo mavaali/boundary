@@ -49,7 +49,8 @@ class ChatResponse:
     raw: dict | None = None
     input_tokens: int = 0
     output_tokens: int = 0
-    cached_input_tokens: int = 0  # subset of input_tokens that hit prompt cache
+    cached_input_tokens: int = 0  # subset of input_tokens that were cache READS (cheap)
+    cache_creation_input_tokens: int = 0  # subset that were cache WRITES (premium-priced)
 
 
 class ModelClient(Protocol):
