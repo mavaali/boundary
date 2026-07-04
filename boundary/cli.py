@@ -8,6 +8,50 @@ from boundary.agent import Agent
 from boundary.overlay import Overlay
 
 
+def _parse_attribution(pairs: list[str]) -> dict:
+    """Parse repeated --attribution KEY=VALUE flags into a str->str dict.
+    Raises ValueError on a malformed entry so the CLI can report it cleanly."""
+    out: dict = {}
+    for p in pairs or []:
+        if "=" not in p:
+            raise ValueError(f"--attribution must be KEY=VALUE, got {p!r}")
+        k, v = p.split("=", 1)
+        k = k.strip()
+        if not k:
+            raise ValueError(f"--attribution has an empty key: {p!r}")
+        out[k] = v.strip()
+    return out
+
+
+def _record_adhoc_run(result, *, workspace: str, persona: str | None,
+                      attribution: dict, started_at: float, ended_at: float,
+                      transcript_path: str | None, db_path=None):
+    """Record an interactive envelope-mode run to the shared history ledger as an
+    '(adhoc)' entry (schedule_name=None), carrying its spend and attribution tags.
+    Returns (run_id, None) on success or (None, error_string) on failure — history
+    recording must never crash an otherwise-successful interactive run."""
+    from boundary.history import History
+    try:
+        h = History(db_path) if db_path else History()
+        run_id = h.record_run(
+            schedule_name=None, persona=persona, workspace=workspace,
+            started_at=started_at, ended_at=ended_at,
+            stop_reason=result.loop_result.stop_reason,
+            iterations=result.loop_result.iterations,
+            writes_executed=result.writes_executed,
+            input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            cached_input_tokens=result.cached_input_tokens,
+            estimated_dollars=result.estimated_dollars, wall_seconds=result.wall_seconds,
+            third_umpire_verdict=None, third_umpire_summary=None,
+            transcript_path=transcript_path, written_files=[],
+            attribution=attribution,
+        )
+        h.close()
+        return run_id, None
+    except Exception as e:  # noqa: BLE001 - ledger write is best-effort
+        return None, f"{type(e).__name__}: {e}"
+
+
 def _print_best_of_k(bres, k: int) -> None:
     """Render a best-of-K result summary for the CLI (shared by run + fielding-coach)."""
     print(f"\n=== best-of-{k} ===")
@@ -241,6 +285,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--envelope-max-output-tokens", type=int, default=50_000)
     run.add_argument("--envelope-max-dollars", type=float, default=None)
     run.add_argument("--envelope-max-wall-seconds", type=float, default=900.0)
+    run.add_argument("--attribution", action="append", default=[], metavar="KEY=VALUE",
+                     help="cost-attribution tag stamped on the recorded run (repeatable), "
+                          "e.g. --attribution tenant=acme --attribution project=pricing. "
+                          "Envelope-mode runs are recorded to history as '(adhoc)' and can "
+                          "be sliced with `boundary history` / tag-scoped budgets.")
     run.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default=None,
                      help="commit-tool policy (refuse|queue|ask|allow). If omitted and commit "
                           "tools are registered, you'll be prompted interactively.")
@@ -759,6 +808,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         from boundary.tools.sandbox import default_deny_read
         deny_read = (default_deny_read() if args.deny_read_secrets else []) + list(args.deny_read)
+        try:
+            attribution = _parse_attribution(getattr(args, "attribution", []))
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return 2
+        if attribution and not args.envelope_writable:
+            print("[note] --attribution is recorded only for envelope-mode runs "
+                  "(pass --envelope-writable ...); ignoring for this raw run.")
         overlay = Overlay.load(args.overlay) if args.overlay else None
         workspace = overlay.workspace_or(args.workspace) if overlay else args.workspace
         persona_path = args.persona
@@ -900,13 +957,31 @@ def main(argv: list[str] | None = None) -> int:
                     on_taint=args.on_taint,
                     require_srt_for_bash=args.require_srt_for_bash,
                 )
+                import time as _time
                 runner = EnvelopeRunner(agent, env)
+                _started_at = _time.time()
                 result = runner.run(args.task, verbose=args.verbose)
+                _ended_at = _time.time()
                 print("\n=== final ===")
                 print(result.loop_result.final_message.content or "(no content)")
                 print(f"\n[iterations={result.loop_result.iterations} stop={result.loop_result.stop_reason} wall={result.wall_seconds:.1f}s]")
                 print(f"[envelope: writes={result.writes_executed}/{env.max_writes} attempted={result.writes_attempted} appends={result.appends_executed}/{env.max_appends} external={result.external_calls}]")
                 print(f"[spend: in={result.input_tokens:,} (cached={result.cached_input_tokens:,}) out={result.output_tokens:,} est=${result.estimated_dollars:.4f}]")
+                # Record the adhoc run to the shared ledger so its spend is
+                # visible in `boundary history` and countable by attribution /
+                # tag-scoped budgets (the '(adhoc)' rows the history view expects).
+                _transcript_path = str(agent.transcript.path) if agent.transcript else None
+                _run_id, _err = _record_adhoc_run(
+                    result, workspace=str(Path(workspace).expanduser()),
+                    persona=(args.role or None), attribution=attribution,
+                    started_at=_started_at, ended_at=_ended_at,
+                    transcript_path=_transcript_path,
+                )
+                if _err is not None:
+                    print(f"[note: run not recorded to history: {_err}]")
+                elif attribution:
+                    _tags = " ".join(f"{k}={v}" for k, v in attribution.items())
+                    print(f"[recorded: run #{_run_id} (adhoc) tags: {_tags}]")
                 if agent.transcript:
                     print(f"[transcript: {agent.transcript.path}]")
                     print(f"[grade with: boundary third-umpire {agent.transcript.path}]")

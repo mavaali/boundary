@@ -747,9 +747,11 @@ boundary budget path/to/schedule.yaml
 #  -> ok; binding=daily; next run capped at $0.2800
 ```
 
-Exit code is `3` when a window is exhausted, so cron/CI can branch on it. Only
-runs recorded to history count (scheduled/pipeline/`schedule-run`); ad-hoc
-`boundary run` prints its cost but does not accrue against a budget.
+Exit code is `3` when a window is exhausted, so cron/CI can branch on it.
+Interactive envelope-mode `boundary run` records to history too (as an `(adhoc)`
+row), so its spend shows in `boundary history` and counts toward attribution and
+tag-scoped budget aggregation — but it is not budget-*gated* (no pre-run skip or
+clamp), since an interactive run has no schedule config to declare a `budget:`.
 
 ### Spend gradient, not a bare kill switch
 
@@ -820,6 +822,17 @@ or `tag:<key>` / `scope: tag` + `scope_tag: <key>` (per distinct value of that
 tag). Pipelines also auto-stamp `step: <step-name>` so spend can be sliced per
 step. Tags are stored in the `runs.attribution_json` column (older history DBs
 migrate automatically on first open) and surfaced in the run-result dict.
+
+Interactive runs can be tagged from the CLI — envelope-mode `boundary run`
+records an `(adhoc)` ledger row carrying the tags:
+
+```bash
+boundary run --system-file prompt.md --workspace . \
+  --envelope-writable "scratch/note.md" \
+  --attribution tenant=acme --attribution project=pricing \
+  --task "..."
+# ... [recorded: run #42 (adhoc) tags: tenant=acme project=pricing]
+```
 
 ### No-progress detection & early-stop nudge
 
