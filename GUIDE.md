@@ -701,7 +701,15 @@ A real research run: ~80K input + 4K output ≈ **$0.30**.
 Same task on Opus 4.7: ~$1.50.
 Same task on Haiku 4.5: ~$0.08.
 
-Cached input is ~10× cheaper. On repeated similar tasks over the same workspace, expect 50-80% cache hit rate after the first run.
+Cached input is ~10× cheaper to *read* (~0.1× the input rate). But writing the
+cache is a **premium**, not free: Anthropic charges ~1.25× the input rate to
+create a 5-min cache entry (2× for the 1-hour TTL). The cost estimate accounts
+for both — cache reads (`cached`) and cache writes (`cache_write`) are separate
+rate-card axes, and the provider clients report read vs write token counts
+separately. Pricing a cache write as plain fresh input (the pre-0.11 behaviour)
+undercounts cache-heavy runs; a write only pays off if the entry is *read* again
+before its TTL expires, so a run whose tool calls stall past the TTL can re-pay
+the write premium every turn with no read benefit.
 
 ### Setting a hard $ ceiling
 

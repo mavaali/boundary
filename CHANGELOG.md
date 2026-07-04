@@ -8,6 +8,16 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Fixed
+- **Cache writes are now priced at their premium** — a cache-creation token was
+  folded into fresh input and billed at 1.0× the input rate, undercounting
+  cache-heavy runs. `ChatResponse` now carries `cache_creation_input_tokens`
+  (populated from the Anthropic `usage`), the rate card gains a `cache_write`
+  axis (Anthropic ~1.25× input; defaults to 1.25× when absent), and
+  `estimate_cost` prices reads and writes on separate axes. Read-only estimates
+  are unchanged, so budgets/gradient/clamp built on the estimate now bind on an
+  accurate cost basis for cached workloads.
+
 ### Added
 - **Cost attribution on the interactive `boundary run` path** — envelope-mode
   interactive runs now record an `(adhoc)` row to the history ledger carrying

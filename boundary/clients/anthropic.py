@@ -124,4 +124,5 @@ class AnthropicClient(ModelClient):
             input_tokens=base_in + cache_read + cache_create,
             output_tokens=int(usage.get("output_tokens", 0)),
             cached_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_create,
         )

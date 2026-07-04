@@ -232,16 +232,26 @@ class Envelope:
     # summary) and is graded on input-grounding instead — large input is fine if
     # it lands in the artifact rather than churning.
     write_profile: str = "edit"  # "edit" | "batch" | "synthesis"
-    # USD per 1M tokens by model id. "cached" defaults to 0.1× input if absent.
-    # Source: published rates as of 2026.
+    # USD per 1M tokens by model id. Keys:
+    #   input       — fresh input tokens
+    #   cached      — cache READ tokens (cheap; defaults to 0.1× input if absent)
+    #   cache_write — cache CREATION tokens (a PREMIUM: Anthropic charges 1.25× input
+    #                 for the 5-min TTL, 2× for 1-hour; defaults to 1.25× if absent).
+    #                 Priced separately because a cache write is a bet — you pre-pay
+    #                 the premium to make later reads 0.1×, and lumping writes into
+    #                 fresh input (the old behaviour) undercounts cache-heavy runs.
+    #   output      — output tokens
+    # Source: published rates as of 2026. OpenAI-family models have no cache-write
+    # charge (auto-cached), and their clients don't report creation tokens, so their
+    # cache_write is never exercised.
     token_rates: dict = field(default_factory=lambda: {
-        "claude-sonnet-4.5":   {"input": 3.0,  "cached": 0.30, "output": 15.0},
-        "claude-sonnet-4.6":   {"input": 3.0,  "cached": 0.30, "output": 15.0},
-        "claude-opus-4.5":     {"input": 15.0, "cached": 1.50, "output": 75.0},
-        "claude-opus-4.6":     {"input": 15.0, "cached": 1.50, "output": 75.0},
-        "claude-opus-4.7":     {"input": 15.0, "cached": 1.50, "output": 75.0},
-        "claude-haiku-4.5":    {"input": 0.80, "cached": 0.08, "output": 4.0},
-        # OpenAI: cached input ~25% of full input rate
+        "claude-sonnet-4.5":   {"input": 3.0,  "cached": 0.30, "cache_write": 3.75,  "output": 15.0},
+        "claude-sonnet-4.6":   {"input": 3.0,  "cached": 0.30, "cache_write": 3.75,  "output": 15.0},
+        "claude-opus-4.5":     {"input": 15.0, "cached": 1.50, "cache_write": 18.75, "output": 75.0},
+        "claude-opus-4.6":     {"input": 15.0, "cached": 1.50, "cache_write": 18.75, "output": 75.0},
+        "claude-opus-4.7":     {"input": 15.0, "cached": 1.50, "cache_write": 18.75, "output": 75.0},
+        "claude-haiku-4.5":    {"input": 0.80, "cached": 0.08, "cache_write": 1.00,  "output": 4.0},
+        # OpenAI: cached input ~25% of full input rate; no separate cache-write charge
         "gpt-5.5":             {"input": 5.0,  "cached": 1.25, "output": 20.0},
         "gpt-5.4":             {"input": 2.5,  "cached": 0.625, "output": 10.0},
         "gpt-5.4-mini":        {"input": 0.50, "cached": 0.125, "output": 2.0},
@@ -266,6 +276,7 @@ class Envelope:
         return {
             "input": max(r["input"] for r in self.token_rates.values()),
             "cached": max(r.get("cached", r["input"] * 0.1) for r in self.token_rates.values()),
+            "cache_write": max(r.get("cache_write", r["input"] * 1.25) for r in self.token_rates.values()),
             "output": max(r["output"] for r in self.token_rates.values()),
         }
 
@@ -288,15 +299,22 @@ class Envelope:
         # Borrow a named model's rate; fall back to max_rate if it too is absent.
         return self.token_rates.get(policy) or self._max_rate()
 
-    def estimate_cost(self, model: str, in_tok: int, out_tok: int, cached_tok: int = 0) -> float:
+    def estimate_cost(self, model: str, in_tok: int, out_tok: int, cached_tok: int = 0,
+                      cache_write_tok: int = 0) -> float:
+        """Estimate a call's USD cost. `in_tok` is the TOTAL input (fresh + cache
+        reads + cache writes); `cached_tok` and `cache_write_tok` are the read and
+        write subsets. Cache reads are cheap (~0.1× input); cache writes carry a
+        premium (~1.25× input) — pricing them as fresh input undercounts."""
         r = self.rate_for(model)
         if not r:
             return 0.0
         cached_rate = r.get("cached", r["input"] * 0.1)
-        fresh_in = max(in_tok - cached_tok, 0)
+        cache_write_rate = r.get("cache_write", r["input"] * 1.25)
+        fresh_in = max(in_tok - cached_tok - cache_write_tok, 0)
         return (
             (fresh_in / 1_000_000) * r["input"]
             + (cached_tok / 1_000_000) * cached_rate
+            + (cache_write_tok / 1_000_000) * cache_write_rate
             + (out_tok / 1_000_000) * r["output"]
         )
 
@@ -973,6 +991,7 @@ class EnvelopeRunner:
         total_in = 0
         total_out = 0
         total_cached = 0
+        total_cache_write = 0
         total_dollars = 0.0   # accumulated per-response so a mid-run model swap is priced right
         degraded = False
         halted_for_budget = False
@@ -1120,8 +1139,10 @@ class EnvelopeRunner:
             total_in += resp.input_tokens
             total_out += resp.output_tokens
             total_cached += resp.cached_input_tokens
+            total_cache_write += resp.cache_creation_input_tokens
             total_dollars += self.envelope.estimate_cost(
-                model_name, resp.input_tokens, resp.output_tokens, resp.cached_input_tokens)
+                model_name, resp.input_tokens, resp.output_tokens,
+                resp.cached_input_tokens, resp.cache_creation_input_tokens)
             msg = resp.message
             messages.append(msg)
             if self.agent.transcript:
@@ -1291,6 +1312,7 @@ class EnvelopeRunner:
                 input_tokens=total_in,
                 output_tokens=total_out,
                 cached_input_tokens=total_cached,
+                cache_creation_input_tokens=total_cache_write,
                 estimated_dollars=est,
                 wall_seconds=wall_seconds,
                 model=model_name,
