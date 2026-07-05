@@ -69,6 +69,29 @@ class ThirdUmpireReport:
             return "WARN"
         return "PASS"
 
+    # Stable schema id for the exported artifact. Bump the version when the shape
+    # of as_dict() changes so downstream consumers (CI gates, audit tooling) can
+    # pin and migrate.
+    SCHEMA = "boundary.third-umpire/v1"
+
+    def as_dict(self) -> dict[str, Any]:
+        """The verdict as a stable, machine-readable document — the exportable
+        'evidence of runtime enforcement' artifact. Standard-shaped: a schema id,
+        the overall verdict, the run summary, and every check with its severity."""
+        return {
+            "schema": self.SCHEMA,
+            "verdict": self.verdict,
+            "transcript_path": self.transcript_path,
+            "summary": self.summary,
+            "checks": [
+                {"name": c.name, "passed": c.passed, "severity": c.severity, "detail": c.detail}
+                for c in self.checks
+            ],
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.as_dict(), indent=indent, default=str)
+
     def markdown(self) -> str:
         lines = [
             f"# Third Umpire report — {self.verdict}",
@@ -221,13 +244,26 @@ class ThirdUmpire:
             severity="warn",
         ))
 
-        # Check 6: did the agent actually produce its expected write?
+        # Check 6: did the agent produce the write FLOOR its envelope declared?
+        # max_writes (the ceiling) is hard-enforced at the tool layer; min_writes
+        # (the floor) is a liveness constraint — "enough must happen" — that only
+        # ever manifested as a soft in-loop nudge. Graded here so the verdict, not
+        # just the nudge, holds the run to its declared floor. min_writes defaults
+        # to 1 when a transcript predates this field, reproducing the old > 0 gate.
         writes_executed = (envelope_end or {}).get("writes_executed", 0)
         if (envelope_start or {}).get("writable_paths"):
+            min_writes = (envelope_start or {}).get("min_writes", 1)
+            if writes_executed >= min_writes:
+                detail = f"{writes_executed} write(s) executed (min_writes={min_writes})"
+            elif writes_executed == 0:
+                detail = f"envelope allowed writes but none were executed (min_writes={min_writes})"
+            else:
+                detail = (f"{writes_executed} write(s) executed but min_writes={min_writes} "
+                          f"required — run under-delivered against its liveness floor")
             report.checks.append(CheckResult(
                 "produced_output",
-                passed=writes_executed > 0,
-                detail=f"{writes_executed} write(s) executed" if writes_executed > 0 else "envelope allowed writes but none were executed",
+                passed=writes_executed >= min_writes,
+                detail=detail,
                 severity="fail",
             ))
 

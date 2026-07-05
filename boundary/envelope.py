@@ -963,6 +963,7 @@ class EnvelopeRunner:
             self.agent.transcript.log("envelope_start",
                 writable_paths=self.envelope.writable_paths,
                 max_writes=self.envelope.max_writes,
+                min_writes=self.envelope.min_writes,
                 max_appends=self.envelope.max_appends,
                 max_input_tokens=self.envelope.max_input_tokens,
                 max_output_tokens=self.envelope.max_output_tokens,

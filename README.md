@@ -5,9 +5,17 @@
 **Agents do not need more trust. They need a boundary.**
 
 Boundary runs tool-calling agents inside an explicit envelope: what they may
-read, what they may write, when they must stage a thesis, and how the run gets
-reviewed afterward. It is for the moment when a coding agent is useful enough to
+read, what they may write — and how *much* (a write floor and ceiling, not just an
+allowlist) — what they may spend, when they must stage a thesis, and how the run
+gets graded afterward. It is for the moment when a coding agent is useful enough to
 delegate to, but not safe enough to leave unsupervised.
+
+Most guards enforce *safety* — bad things don't happen. Boundary also enforces
+**liveness** (enough must happen: the write ceiling is refused at the tool layer,
+the floor is graded in review) and treats **spend as a first-class boundary that
+fails closed** (an unpriced model is priced at the most expensive rate, so a dollar
+cap always binds). Both track state across the whole run — the thing a per-call
+guard structurally cannot see.
 
 **Four modes:**
 - Interactive: `boundary run --system-file <prompt.md> --task "..."`
