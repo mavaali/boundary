@@ -93,6 +93,46 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 - Added a `ruff` lint gate (E/F/I/B/UP) over the package; package and tests are
   lint-clean.
 
+## [0.10.0] - 2026-06-29
+
+### Added
+- **Declarative triggers + a results→tasks queue** (a bounded BabyAGI-style loop,
+  #18) — a finished run's outcome (Third Umpire verdict, discovered items, error)
+  is matched against declarative `TriggerRules`; matching rules enqueue new tasks,
+  **pending / priority-ordered / human-gated** — never auto-dispatched. That gate
+  is the line vs BabyAGI: the loop may *propose* its next work, not run it unasked.
+  Adds a `tasks` table to `history.db` (with a `parent_run_id` causal edge,
+  priority, status), `boundary/triggers.py` (`TriggerRule {on, when, action}` +
+  pure `evaluate_triggers`, with `enqueue_discovered` and `enqueue_followup`
+  actions), `ScheduleConfig.triggers` (headless evaluates post-run and enqueues),
+  and a `boundary tasks list|ready|add|approve|done|reject` CLI.
+
+## [0.9.1] - 2026-06-29
+
+### Fixed
+- **Windows path handling in the fabricspecs discovery source** (#17) — normalize
+  scanned paths to POSIX so discovery and its path exclusions work on Windows.
+
+## [0.9.0] - 2026-06-29
+
+### Added
+- **`write_profile` lens for the Third Umpire's `spend_pacing` check** (#16) —
+  declare a run's shape (`edit` / `batch` / `synthesis`) so spend is graded on the
+  right axis: `edit`/`batch` on tokens-per-write (cheap output expected),
+  `synthesis` on input-grounding (read-heavy by design — large input is fine when
+  it lands in the artifact rather than churning).
+
+## [0.8.0] - 2026-06-29
+
+### Added
+- **`fabricspecs_questions` discovery source + weekly discover-to-digest schedule**
+  (#15) — an owner-scoped Discover source scans `discoverable: true` specs,
+  extracts unanswered `## Open Questions` (table `Status=Open` or bullets), and
+  emits one task per question (generated dirs hard-excluded). An optional
+  `discover:` block on `ScheduleConfig` injects the discovered questions into the
+  persona's task; ships a weekly triage schedule (vision persona → digest, with
+  dispatch of any individual question staying human-gated).
+
 ## [0.7.0] - 2026-06-25
 
 ComPilot incorporation — lessons from *Agentic Auto-Scheduling: An Experimental
