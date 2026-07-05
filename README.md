@@ -303,6 +303,30 @@ boundary copilot status          # should say "oauth token: present"
 
 For local development (clone + editable install), see [GUIDE.md](GUIDE.md#contributor-setup-editable-install).
 
+## Backends
+
+Copilot is the **default**, not a requirement. Pick a backend with `--client`
+(or `client:` in a schedule/pipeline YAML) and the model with `--model`:
+
+| `--client` | Auth | Default model | Billing |
+|---|---|---|---|
+| `copilot` *(default)* | `boundary copilot login` (OAuth device flow) | `claude-sonnet-4.5` | your GitHub Copilot subscription |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` | Anthropic API (metered, per-token) |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-haiku-4.5` | OpenRouter (metered) |
+| `together` | `TOGETHER_API_KEY` | `Qwen/Qwen2.5-Coder-32B-Instruct` | Together (metered) |
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+boundary run --client anthropic --model claude-sonnet-4.6 --task "..."
+```
+
+**On Claude subscriptions:** the `anthropic` client uses an **API key** (metered
+API billing), which is separate from a Claude.ai **Pro/Max** plan. There's no
+"log in with your Claude subscription" client — unlike GitHub Copilot, Anthropic
+doesn't expose a third-party API for Pro/Max quota (it's consumed through
+claude.ai, the apps, and Claude Code). If you want subscription economics, that's
+Claude Code's lane, not Boundary's.
+
 ## Quick start
 
 ```bash

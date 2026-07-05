@@ -73,6 +73,33 @@ boundary copilot models           # lists everything your subscription allows
 
 Default model is `claude-sonnet-4.5`. Override with `--model claude-opus-4.7` etc.
 
+### Backends other than Copilot
+
+Copilot is the default, not a requirement. Select a backend with `--client`
+(or `client:` in a schedule/pipeline YAML) and a model with `--model`:
+
+| `--client` | Auth | Default model |
+|---|---|---|
+| `copilot` *(default)* | `boundary copilot login` | `claude-sonnet-4.5` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-haiku-4.5` |
+| `together` | `TOGETHER_API_KEY` | `Qwen/Qwen2.5-Coder-32B-Instruct` |
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+boundary run --client anthropic --model claude-sonnet-4.6 --task "..."
+```
+
+The `--client` default is `copilot` everywhere (`run`, `fielding-coach`,
+`discover`, and `ScheduleConfig.client`), so without an override an unauthenticated
+run will try Copilot and fail — set `--client` / `client:` to use another backend.
+
+The `anthropic` client uses an **API key** (metered API billing), which is
+separate from a Claude.ai **Pro/Max** subscription. There is no client that
+consumes a Pro/Max plan: unlike GitHub Copilot, Anthropic doesn't expose a
+third-party API for subscription quota (it's consumed via claude.ai, the apps,
+and Claude Code). Subscription economics are Claude Code's lane, not Boundary's.
+
 ---
 
 ## Mode 4 — Pipelines (squad plan, then persona runs)

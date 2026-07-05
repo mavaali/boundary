@@ -8,6 +8,18 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Fixed
+- **`boundary run --client openrouter` now works** — the OpenRouter client was
+  implemented and routable via `make_client` (schedules/pipelines), but omitted
+  from the `run` subcommand's `--client` choices, so ad-hoc runs couldn't select
+  it. Added to the choice list.
+
+### Documentation
+- **Backends section** in README + GUIDE — documents all four clients
+  (`copilot` / `anthropic` / `openrouter` / `together`), their auth and default
+  models, and clarifies that the `anthropic` client uses a metered API key, not a
+  Claude.ai Pro/Max subscription (there is no subscription-quota client).
+
 ## [0.11.1] - 2026-07-05
 
 ### Fixed

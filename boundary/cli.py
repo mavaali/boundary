@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--workspace", default=".")
     run.add_argument("--overlay", help="overlay name/path for role and workspace defaults")
     run.add_argument("--role", help="role name from the selected overlay (e.g. natasha, banner)")
-    run.add_argument("--client", default="copilot", choices=["copilot", "together", "anthropic"])
+    run.add_argument("--client", default="copilot", choices=["copilot", "together", "anthropic", "openrouter"])
     run.add_argument("--model", help="override model name")
     run.add_argument("--max-iters", type=int, default=25)
     run.add_argument("--no-shell", action="store_true")
