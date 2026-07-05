@@ -210,6 +210,17 @@ boundary budget path/to/schedule.yaml
 #    -> ok; binding=monthly; next run capped at $0.2800
 ```
 
+The budget *bounds* one tenant; the chargeback rollup *reports* every tenant — the
+total spend grouped by any attribution tag ("the bill"):
+
+```bash
+boundary history --by tenant            # all time; --since 30 windows to a period
+#  spend by tenant (all time):
+#    acme      $   0.5500      2 run(s)
+#    globex    $   0.2800      1 run(s)
+#    total     $   0.8300      3 run(s)
+```
+
 Full reference and run-cost ballparks: **[GUIDE.md](GUIDE.md)** → *Cost / budget knobs*.
 
 ## Where Boundary sits
