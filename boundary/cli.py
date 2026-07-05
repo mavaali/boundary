@@ -184,6 +184,10 @@ def main(argv: list[str] | None = None) -> int:
         help="grade a transcript against envelope eval",
     )
     tu.add_argument("transcript", help="path to a JSONL transcript")
+    tu.add_argument("--format", choices=["markdown", "json"], default="markdown",
+                    help="output format: human-readable markdown (default) or a "
+                         "stable JSON verdict artifact for CI/audit (schema "
+                         "boundary.third-umpire/v1)")
 
     sub.add_parser(
         "selftest",
@@ -747,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "third-umpire":
         from boundary.third_umpire import ThirdUmpire
         report = ThirdUmpire.grade(args.transcript)
-        print(report.markdown())
+        print(report.to_json() if args.format == "json" else report.markdown())
         return 0 if report.verdict != "FAIL" else 2
 
     if args.cmd == "taint":
