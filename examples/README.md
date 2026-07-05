@@ -12,7 +12,7 @@ source .venv/bin/activate
 | Path | Purpose |
 |---|---|
 | `prompts/` | Reusable system prompts for common agent roles |
-| `schedules/` | Headless schedule YAML templates |
+| `schedules/` | Headless schedule YAML templates (see `spend-controlled-daily.yaml` for the full spend + per-tenant chargeback surface) |
 | `pipelines/` | Multi-persona pipeline YAML templates with a squad-planning gate |
 | `overlays/sample/` | A portable overlay that maps role names to prompts |
 | `workspaces/sample-repo/` | A tiny safe workspace for first runs |
@@ -114,7 +114,43 @@ Install only after editing `workspace`, personas, writable paths, and caps:
 boundary pipeline install examples/pipelines/squad-docs-health.yaml
 ```
 
-## 6. Python API
+## 6. Spend control & chargeback
+
+`schedules/spend-controlled-daily.yaml` exercises the full spend surface in one
+file: per-run `max_dollars`, fail-closed pricing (`on_unpriced_model`), the spend
+gradient, degrade-to-cheaper, a cross-run `budget:` scoped per tenant, and
+`attribution:` tags stamped on every run.
+
+```bash
+boundary schedule validate examples/schedules/spend-controlled-daily.yaml
+boundary schedule-run examples/schedules/spend-controlled-daily.yaml --verbose
+```
+
+The tags turn spend into a **chargeback** loop — attribute, run, then read the
+bill. Deploy the schedule once per tenant (vary `attribution.tenant`, e.g. `acme`,
+`globex`); every run is stamped and lands in the shared ledger.
+
+```bash
+# Per-tenant cap status (from the YAML's own budget: block):
+boundary budget examples/schedules/spend-controlled-daily.yaml
+
+# The bill — total spend grouped by tenant across every run:
+boundary history --by tenant
+#   spend by tenant (all time):
+#     acme                     $   0.5500      2 run(s)
+#     globex                   $   0.2800      1 run(s)
+#     -----------------------
+#     total                    $   0.8300      3 run(s)
+
+# Window it to the current billing period:
+boundary history --by tenant --since 30
+```
+
+`--by` works for any attribution key (`--by project`, `--by purpose`). The budget
+*bounds* one tenant's spend; the rollup *reports* every tenant's — the two halves
+of the enforced-cost envelope.
+
+## 7. Python API
 
 ```bash
 python examples/hello_world.py
