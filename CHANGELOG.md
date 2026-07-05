@@ -9,6 +9,11 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **Chargeback rollup** — `boundary history --by <tag>` totals spend grouped by an
+  attribution tag (e.g. `--by tenant`), with `--since <days>` to window it to a
+  billing period. Backed by `History.spend_by_tag()`. The read side of attribution:
+  tag-scoped budgets *bound* one tenant's spend, this *reports* every tenant's — the
+  bill an operator hands a client. Surfaced in `examples/` (spend-controlled loop).
 - **Exportable Third Umpire verdict** — `ThirdUmpireReport.as_dict()` / `to_json()`
   emit a stable, versioned JSON document (schema `boundary.third-umpire/v1`: overall
   verdict, run summary, and every check with its severity), and `boundary

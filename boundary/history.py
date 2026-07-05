@@ -181,6 +181,23 @@ class History:
             params).fetchone()
         return float(row[0] or 0.0)
 
+    def spend_by_tag(self, key: str, since: float = 0.0) -> dict[str | None, dict]:
+        """Roll up estimated_dollars grouped by the distinct values of an
+        attribution key — the chargeback read side. Returns
+        {value: {"cost": float, "runs": int}}, ordered by cost descending; runs
+        missing the key bucket under None. `since` windows by started_at
+        (0.0 = all time). This is the counterpart to tag-scoped budgets: budgets
+        bound one tenant's spend, this reports every tenant's."""
+        if not _SAFE_TAG_KEY.match(key):
+            raise ValueError(f"invalid attribution tag key: {key!r}")
+        path = f"$.{key}"
+        rows = self._conn.execute(
+            f"SELECT json_extract(attribution_json, '{path}') AS v, "
+            f"COALESCE(SUM(estimated_dollars), 0), COUNT(*) "
+            f"FROM runs WHERE started_at >= ? GROUP BY v ORDER BY 2 DESC",
+            (since,)).fetchall()
+        return {r[0]: {"cost": float(r[1] or 0.0), "runs": int(r[2])} for r in rows}
+
     def runs_for_workspace(self, workspace: str, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
             "SELECT * FROM runs WHERE workspace=? ORDER BY started_at DESC LIMIT ?",

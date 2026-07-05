@@ -171,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     hist = sub.add_parser("history", help="show recent runs")
     hist.add_argument("--limit", type=int, default=20)
     hist.add_argument("--schedule", default=None)
+    hist.add_argument("--by", metavar="TAG", default=None,
+                      help="chargeback rollup: total spend grouped by an attribution "
+                           "tag (e.g. --by tenant) instead of the per-run list")
+    hist.add_argument("--since", type=float, default=None, metavar="DAYS",
+                      help="with --by, window the rollup to the last DAYS days")
 
     rq = sub.add_parser("review-queue", help="show ambiguity halts waiting for human input")
     rq_sub = rq.add_subparsers(dest="rq_cmd")
@@ -661,9 +666,32 @@ def main(argv: list[str] | None = None) -> int:
         import datetime as _dt
         import json as _json
 
+        import time as _time
+
         from boundary.history import History
         from boundary.third_umpire import downgrade_tags
         h = History()
+        # Chargeback rollup: spend grouped by an attribution tag ("the bill").
+        if args.by:
+            since = (_time.time() - args.since * 86400.0) if args.since else 0.0
+            try:
+                roll = h.spend_by_tag(args.by, since=since)
+            except ValueError as e:
+                print(f"error: {e}")
+                return 2
+            window = f"last {args.since:g} days" if args.since else "all time"
+            print(f"spend by {args.by} ({window}):")
+            if not roll:
+                print("  (no runs yet)")
+                return 0
+            total_cost = sum(v["cost"] for v in roll.values())
+            total_runs = sum(v["runs"] for v in roll.values())
+            for value, v in roll.items():
+                label = value if value is not None else "(unset)"
+                print(f"  {label:24s} ${v['cost']:9.4f}   {v['runs']:4d} run(s)")
+            print(f"  {'-' * 24}")
+            print(f"  {'total':24s} ${total_cost:9.4f}   {total_runs:4d} run(s)")
+            return 0
         rows = h.list_runs(limit=args.limit, schedule_name=args.schedule)
         if not rows:
             print("(no runs yet)")
