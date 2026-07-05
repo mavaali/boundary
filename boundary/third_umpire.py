@@ -221,13 +221,26 @@ class ThirdUmpire:
             severity="warn",
         ))
 
-        # Check 6: did the agent actually produce its expected write?
+        # Check 6: did the agent produce the write FLOOR its envelope declared?
+        # max_writes (the ceiling) is hard-enforced at the tool layer; min_writes
+        # (the floor) is a liveness constraint — "enough must happen" — that only
+        # ever manifested as a soft in-loop nudge. Graded here so the verdict, not
+        # just the nudge, holds the run to its declared floor. min_writes defaults
+        # to 1 when a transcript predates this field, reproducing the old > 0 gate.
         writes_executed = (envelope_end or {}).get("writes_executed", 0)
         if (envelope_start or {}).get("writable_paths"):
+            min_writes = (envelope_start or {}).get("min_writes", 1)
+            if writes_executed >= min_writes:
+                detail = f"{writes_executed} write(s) executed (min_writes={min_writes})"
+            elif writes_executed == 0:
+                detail = f"envelope allowed writes but none were executed (min_writes={min_writes})"
+            else:
+                detail = (f"{writes_executed} write(s) executed but min_writes={min_writes} "
+                          f"required — run under-delivered against its liveness floor")
             report.checks.append(CheckResult(
                 "produced_output",
-                passed=writes_executed > 0,
-                detail=f"{writes_executed} write(s) executed" if writes_executed > 0 else "envelope allowed writes but none were executed",
+                passed=writes_executed >= min_writes,
+                detail=detail,
                 severity="fail",
             ))
 
