@@ -8,6 +8,8 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-05
+
 ### Fixed
 - **Cache writes are now priced at their premium** — a cache-creation token was
   folded into fresh input and billed at 1.0× the input rate, undercounting

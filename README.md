@@ -70,12 +70,13 @@ and `--require-srt-for-bash`, and disable shell or web tools when not needed.
 
 An agent you leave running is an agent spending money. Boundary treats spend as a
 first-class boundary, not a footnote — the same "bound it, then verify it" posture
-it applies to writes and egress. Five composable primitives, from one run to a
-whole tenant:
+it applies to writes and egress. Six composable primitives: five that take a run
+from one-shot to fleet-wide, plus attribution to slice the bill.
 
 ```
 per-run caps ─▶ fail-closed pricing ─▶ spend gradient ─▶ degrade-to-cheaper ─▶ cross-run budgets
    one run          honest cost          soft landing        cheaper tail        many runs
+                               + cost attribution: slice any of it by project / tenant
 ```
 
 ### 1. Per-run caps
@@ -112,6 +113,10 @@ conservative upper bound so the cap still bites; the live banner shows
 envelope:
   on_unpriced_model: max_rate   # default; "zero" restores fail-open, "<model-id>" borrows a rate
 ```
+
+The same honesty applies to caching: cache *reads* are cheap (~0.1× input) but
+cache *writes* carry a ~1.25× premium, and each is priced on its own axis —
+billing a write as fresh input undercounts cached workloads.
 
 ### 3. Spend gradient — a soft landing, not a wall
 
