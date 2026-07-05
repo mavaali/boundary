@@ -8,6 +8,12 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Fixed
+- **`boundary run --client openrouter` now works** — the OpenRouter client was
+  implemented and routable via `make_client` (schedules/pipelines), but omitted
+  from the `run` subcommand's `--client` choices, so ad-hoc runs couldn't select
+  it. Added to the choice list.
+
 ## [0.11.1] - 2026-07-05
 
 ### Fixed

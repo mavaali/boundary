@@ -38,6 +38,17 @@ def test_run_malformed_attribution_exits_2(capsys):
     assert "KEY=VALUE" in capsys.readouterr().out
 
 
+def test_run_accepts_openrouter_client(capsys):
+    # An unknown --client is rejected by argparse (SystemExit at parse time)...
+    with pytest.raises(SystemExit):
+        main(["run", "--task", "x", "--client", "bogus"])
+    # ...while openrouter is a valid choice: parsing succeeds and we reach the
+    # handler, which returns 2 on the malformed attribution (no SystemExit).
+    rc = main(["run", "--task", "x", "--client", "openrouter",
+               "--envelope-writable", "out.md", "--attribution", "bad"])
+    assert rc == 2
+
+
 # --- adhoc recording helper ---------------------------------------------
 
 def _fake_result(dollars=0.42):
