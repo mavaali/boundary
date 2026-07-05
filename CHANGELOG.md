@@ -8,6 +8,38 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Added
+- **Exportable Third Umpire verdict** — `ThirdUmpireReport.as_dict()` / `to_json()`
+  emit a stable, versioned JSON document (schema `boundary.third-umpire/v1`: overall
+  verdict, run summary, and every check with its severity), and `boundary
+  third-umpire <transcript> --format json` prints it. This is the "evidence of
+  runtime enforcement" artifact a CI gate or auditor can consume — a spec-relative
+  verdict, machine-readable and pinnable. `--format markdown` remains the default.
+- **Accumulation-mode benchmark task + per-call baseline** (`benchmarks/`). The
+  suite now runs each task under three regimes — undefended → a per-call content
+  mediator (a Progent/DLP-style baseline with no cross-call memory) → the envelope
+  — and reports ASR across all three. New `drip_exfil_over_writes` task leaks the
+  secret one innocuous fragment at a time across many *allowlisted* writes, so
+  neither the path allowlist nor any per-call check fires; only the run-level write
+  **cardinality** cap (`max_writes`) bounds it. On the deterministic mock harness
+  the three-regime aggregate is **ASR undefended 4/4 → per-call 2/4 → envelope
+  0/4** — the per-call baseline is structurally blind to the accumulation drip
+  (and to the action-based commit), while the run-level contract closes all four.
+  `InjectionTask` gains optional `max_writes`/`max_external` caps; `run_task` gains
+  a `mode` (`"envelope"|"percall"|"none"`, back-compatible with `defended`).
+
+### Changed
+- **The Third Umpire now grades the write FLOOR, not just presence.** `max_writes`
+  (the ceiling) is hard-enforced at the tool layer, but `min_writes` (the liveness
+  floor — "enough must happen") was only ever a soft in-loop nudge; the post-run
+  `produced_output` check passed on any single write. It now fails when
+  `writes_executed < min_writes`, so the verdict — not just the nudge — holds a run
+  to the floor its envelope declared. `envelope_start` now records `min_writes` for
+  the grader; transcripts predating this field default to a floor of 1, reproducing
+  the previous `> 0` behaviour exactly (backward compatible). This closes the
+  safety/liveness asymmetry: both the ceiling and the floor of the write-cardinality
+  contract are now enforced, one at the tool layer and one at the verdict layer.
+
 ### Fixed
 - **`boundary run --client openrouter` now works** — the OpenRouter client was
   implemented and routable via `make_client` (schedules/pipelines), but omitted
