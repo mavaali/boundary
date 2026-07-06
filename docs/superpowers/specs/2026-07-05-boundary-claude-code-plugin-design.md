@@ -201,4 +201,6 @@ separate from the PyPI `boundary-envelope` package. The README states the non-go
 - **CC transcript format drift** is avoided by design (we author our own log), but the
   *optional* engine path over CC's transcript is not attempted for that reason.
 - **SessionEnd on abrupt termination** may not fire; the verdict is best-effort. The
-  event log still exists for a later manual `boundary third-umpire` run.
+  event log still exists for a later manual verdict — self-contained via `lib/grade.js`,
+  or via `boundary third-umpire` after the same transcript transform (never on the flat
+  log directly).
