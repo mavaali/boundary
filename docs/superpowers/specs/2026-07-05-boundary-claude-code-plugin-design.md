@@ -1,0 +1,187 @@
+# Boundary — Claude Code plugin (design spec)
+
+**Date:** 2026-07-05 · **Status:** design, pre-implementation.
+
+## Goal
+
+A Claude Code plugin named `boundary` that enforces Boundary's envelope contract
+*inside a Claude Code session* and grades the run against it. Two aims, jointly:
+
+- **Defense (kill-condition):** make the differentiated pieces — the **staging
+  pivot** and a **`boundary.third-umpire/v1` verdict** — real in Claude Code, so a
+  harness *adopts* the contract vocabulary instead of a hooks+`srt` clone replacing
+  the engine. The plugin is evidence the contract is a portable standard, not an API
+  to one binary.
+- **Practical utility:** deliver enforcement a Claude Code user actually wants —
+  a write jail, a write-count cap, and a commit denylist — at zero-friction install.
+
+Self-contained enforcement (no Python required); the Python engine is an *optional*
+upgrade for the richer verdict only.
+
+## Non-goals (stated so they are not silent gaps)
+
+- **Spend / degrade / chargeback.** Claude Code hooks do **not** expose token usage
+  or cost (unshipped feature request, anthropics/claude-code#11008). Dollar caps,
+  degrade-to-cheaper, and per-tenant chargeback **cannot** be enforced from a hook
+  today. Hard wall, not a scoping preference.
+- **Taint / information-flow.** Deferred — needs untrusted-read → write tracking that
+  is complex and version-fragile without the spend story to motivate it.
+- **Prose-grounding checks** (numbers-grounded, claim-labels). The plugin's event log
+  captures tool decisions, not assistant text, so these are only reachable via the
+  optional engine path over Claude Code's own transcript (whose format the docs warn
+  changes between versions) — out of the self-contained MVP.
+
+## Runtime decision
+
+Hook scripts are **Node.js with zero external dependencies** (Node built-ins only:
+`fs`, `process`, `child_process`). Rationale: every Claude Code user already has Node
+(CC ships as an npm package), so this is genuinely "no extra dependency" — no `jq`, no
+bundled interpreter, no Python. Cross-platform. The Python `boundary` CLI stays
+optional, invoked only if present on `PATH`.
+
+## Architecture
+
+A CC plugin directory published to a plugin marketplace, living in this monorepo at
+`integrations/claude-code/` so the verdict schema stays shared with the engine.
+
+```
+integrations/claude-code/
+├── .claude-plugin/plugin.json     # manifest (name: boundary)
+├── hooks/hooks.json               # SessionStart, PreToolUse, SessionEnd
+├── scripts/
+│   ├── start.js                   # SessionStart: read config, init state, emit envelope_start
+│   ├── enforce.js                 # PreToolUse: gate + count + log a Boundary-schema event
+│   └── verdict.js                 # SessionEnd: grade events.jsonl -> boundary.third-umpire/v1
+├── commands/ (or skills/)         # /boundary:stage, /boundary:start
+├── lib/                           # pure logic shared + unit-tested (envelope.js, grade.js)
+└── test/                          # node --test unit + e2e fixtures
+```
+
+### Envelope declaration
+
+A `.boundary.json` in the project `cwd` declares the session envelope; absent → safe
+defaults (staging on, a conservative `writable_paths`, `max_writes`, `deny_commits`).
+
+```json
+{
+  "writable_paths": ["scratch/**", "docs/**"],
+  "max_writes": 10,
+  "min_writes": 1,
+  "require_staging": true,
+  "max_unstaged_reads": 3,
+  "deny_commits": true
+}
+```
+
+### State
+
+Per-session state under `${CLAUDE_PLUGIN_DATA}/<session_id>/`, keyed by the stable
+`session_id` present in every hook input:
+
+- `state.json` — counters (`writes_executed`, `unstaged_reads`), `staged` flag.
+- `staged.json` — the staged thesis (thesis / hypotheses / evidence_plan / intended_write).
+- `events.jsonl` — a **Boundary-schema** event log the hooks author as they enforce
+  (`envelope_start`, `write_allowed`, `write_refused`, `staged`, `limit_hit`,
+  `bash_commit_blocked`, `envelope_end`). This is the verdict's input — the plugin
+  never parses Claude Code's own transcript, sidestepping its version-fragile format.
+
+## Enforcement (PreToolUse → `enforce.js`)
+
+Matcher: `Write|Edit|Bash|Read|Grep`. Reads envelope + state + the tool call, applies
+in order, returns `permissionDecision: "deny"` with a `permissionDecisionReason`, and
+appends the corresponding event:
+
+1. **Unstaged-read cap** — on `Read|Grep` when `require_staging` and not staged and
+   `unstaged_reads >= max_unstaged_reads`: deny, reason instructs `/boundary:stage`.
+2. **Staging gate** — on `Write|Edit|Bash` when `require_staging` and not staged: deny,
+   reason instructs staging first.
+3. **Write allowlist** — on `Write|Edit` whose path is outside `writable_paths`
+   (normalized, `..`/absolute rejected): deny.
+4. **Cardinality** — on `Write|Edit` when `writes_executed >= max_writes`: deny.
+5. **Commit denylist** — on `Bash` whose command's argv[0] basename is a commit binary
+   (`curl`, `wget`, `gh`, `git push|commit|tag`, `mail`, `osascript`, …): deny.
+
+Allowed writes increment `writes_executed`. Non-matched or allowed calls return
+`permissionDecision: "allow"`/`"defer"`.
+
+## Staging pivot (`/boundary:stage` + deny-reason re-anchor)
+
+The `/boundary:stage` command records the staged thesis to `staged.json` and appends a
+`staged` event. The pivot is enforced as the **strong form**, matching every part of the
+engine that is *itself* enforced (not merely prompted):
+
+- **Hard-enforced:** the unstaged-read cap and the write/commit gate (both deny via
+  hooks), identical to `EnvelopeRunner`.
+- **Resume-from-thesis:** on *every* refused write, `enforce.js` replays the **full
+  staged thesis + evidence plan + "resume from this stage; do not restart research"**
+  in `permissionDecisionReason`. Deterministic re-injection, not a vague nudge.
+
+**Honest fidelity caveat.** A hook is *reactive per tool-event*; it cannot compose the
+model's conversation turns the way the engine owns its loop. So it **deters rather than
+structurally forbids** a restart — it denies the tools a restart would use and
+re-anchors on the thesis, but cannot guarantee the model won't try. Note: the engine's
+own post-stage read discipline is *also* prompt-guided (`envelope.py` does not
+mechanically gate post-stage reads), so the real-world gap is a re-anchor nudge vs. a
+guaranteed-pinned context — narrow.
+
+## Verdict (SessionEnd → `verdict.js`)
+
+Appends `envelope_end`, then grades `events.jsonl` into a `boundary.third-umpire/v1`
+document (same schema as the engine). Self-contained checks cover the **enforced**
+dimensions the plugin directly observed:
+
+- `writes_inside_allowlist` (any `write_refused` for path → fail)
+- `produced_output` (`writes_executed >= min_writes` → the liveness floor)
+- `staging_pivot` (a `staged` event exists, before the first write)
+- `commit_policy_held` (any `bash_commit_blocked`)
+
+Output written to `.boundary/verdict.json` + a one-line summary. **Optional engine
+upgrade:** if `boundary` is on `PATH`, additionally run
+`boundary third-umpire events.jsonl --format json` for the full check suite — it grades
+natively because the log is already Boundary-format — and link its richer verdict.
+(Token-dependent checks like `spend_pacing` will be inert, since the log carries no
+token counts; the enforced-dimension checks are accurate.)
+
+## Data flow
+
+```
+SessionStart  → start.js   : read .boundary.json → state.json + envelope_start event
+Read/Grep     → enforce.js : unstaged-read cap → allow/deny + event
+Write/Edit    → enforce.js : stage gate → allowlist → cardinality → allow/deny + event
+Bash          → enforce.js : stage gate → commit denylist → allow/deny + event
+/boundary:stage           : write staged.json + staged event
+SessionEnd    → verdict.js : envelope_end → grade events.jsonl → verdict.json (+ engine if present)
+```
+
+## Testing
+
+`lib/` holds the pure logic: `decide(envelope, state, toolInput) → {decision, reason,
+event, newState}` and `grade(events) → verdict`. Both are pure functions of their
+inputs — unit-tested with `node --test` by feeding synthetic hook-input JSON and state,
+asserting the decision, the emitted event, and the verdict. No live Claude Code needed
+(same mock philosophy as `benchmarks/`). The thin `scripts/*.js` only do stdin/stdout +
+file I/O around `lib/`.
+
+**End-to-end fixture:** replay a session — `SessionStart` → unstaged-`Read`×4 (4th
+denied) → `/boundary:stage` → `Write` allowed → out-of-allowlist `Write` denied →
+`Write`×N until cardinality denied → `Bash curl` denied → `SessionEnd` — and assert the
+final `boundary.third-umpire/v1` verdict (e.g. `staging_pivot` pass, `produced_output`
+pass, `writes_inside_allowlist` fail).
+
+## Distribution
+
+Published as a Claude Code plugin (marketplace entry / installable from the repo),
+separate from the PyPI `boundary-envelope` package. The README states the non-goals
+(spend/taint) up front so the enforcement envelope is not mistaken for the full engine.
+
+## Risks / open questions
+
+- **`${CLAUDE_PLUGIN_DATA}` lifecycle** is not documented (TTL/retention across
+  sessions). Mitigation: key state on `session_id` and treat stale dirs as best-effort;
+  `verdict.js` cleans up its session dir after emitting.
+- **`permission_mode` interactions** (e.g. `bypassPermissions`) may pre-empt a `deny`.
+  Verify against a live version; document any mode where enforcement is advisory.
+- **CC transcript format drift** is avoided by design (we author our own log), but the
+  *optional* engine path over CC's transcript is not attempted for that reason.
+- **SessionEnd on abrupt termination** may not fire; the verdict is best-effort. The
+  event log still exists for a later manual `boundary third-umpire` run.
