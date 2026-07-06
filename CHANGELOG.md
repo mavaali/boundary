@@ -8,6 +8,13 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-05
+
+First release published to PyPI. The bare `boundary` name is taken by an
+unrelated project, so the distribution name is **`boundary-envelope`**
+(`pip install boundary-envelope`); the import package (`import boundary`) and the
+`boundary` console command are unchanged.
+
 ### Added
 - **Chargeback rollup** — `boundary history --by <tag>` totals spend grouped by an
   attribution tag (e.g. `--by tenant`), with `--since <days>` to window it to a
@@ -50,6 +57,12 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
   implemented and routable via `make_client` (schedules/pipelines), but omitted
   from the `run` subcommand's `--client` choices, so ad-hoc runs couldn't select
   it. Added to the choice list.
+- **Wheel build no longer references a gitignored file** — the `data-files` list
+  shipped `examples/.../scratch/.gitkeep`, but `scratch/` is gitignored so the file
+  never exists in a clean tree, and `uv build` / `setuptools` failed the wheel step.
+  Dropped the entry (the sample workspace's scratch dir is created at run time); the
+  wheel and sdist now build clean. This surfaced only now because it is the first
+  actual package build.
 
 ### Documentation
 - **Backends section** in README + GUIDE — documents all four clients
