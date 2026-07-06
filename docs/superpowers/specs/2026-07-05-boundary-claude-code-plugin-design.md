@@ -13,17 +13,23 @@ A Claude Code plugin named `boundary` that enforces Boundary's envelope contract
   the engine. The plugin is evidence the contract is a portable standard, not an API
   to one binary.
 - **Practical utility:** deliver enforcement a Claude Code user actually wants —
-  a write jail, a write-count cap, and a commit denylist — at zero-friction install.
+  a write jail, a write-count cap, a commit denylist, and a post-run report card
+  (verdict + a cost estimate) — at zero-friction install.
 
 Self-contained enforcement (no Python required); the Python engine is an *optional*
 upgrade for the richer verdict only.
 
 ## Non-goals (stated so they are not silent gaps)
 
-- **Spend / degrade / chargeback.** Claude Code hooks do **not** expose token usage
-  or cost (unshipped feature request, anthropics/claude-code#11008). Dollar caps,
-  degrade-to-cheaper, and per-tenant chargeback **cannot** be enforced from a hook
-  today. Hard wall, not a scoping preference.
+- **Live spend *enforcement* / degrade / chargeback.** Enforcing a dollar cap
+  *mid-session* needs per-call token totals. Hooks are not handed token/cost data
+  directly — the clean fix (anthropics/claude-code#11008) has sat untouched for
+  months on a fast-moving product, so it is not a bet to build on — and
+  reconstructing totals by re-parsing a growing transcript on *every* tool call is
+  O(n²), one call lagged, and fragile. So live caps, degrade-to-cheaper, and
+  per-tenant chargeback are out — as impractical-in-a-hook, not as blocked-on-a-promise.
+  **However, post-hoc spend *visibility* is a cheap, different thing and IS in scope**
+  (one parse at session end) — see "Spend visibility" under Verdict.
 - **Taint / information-flow.** Deferred — needs untrusted-read → write tracking that
   is complex and version-fragile without the spend story to motivate it.
 - **Prose-grounding checks** (numbers-grounded, claim-labels). The plugin's event log
@@ -53,7 +59,7 @@ integrations/claude-code/
 │   ├── enforce.js                 # PreToolUse: gate + count + log a Boundary-schema event
 │   └── verdict.js                 # SessionEnd: grade events.jsonl -> boundary.third-umpire/v1
 ├── commands/ (or skills/)         # /boundary:stage, /boundary:start
-├── lib/                           # pure logic shared + unit-tested (envelope.js, grade.js)
+├── lib/                           # pure logic shared + unit-tested (envelope.js, grade.js, cost.js)
 └── test/                          # node --test unit + e2e fixtures
 ```
 
@@ -84,9 +90,11 @@ Per-session state under `${CLAUDE_PLUGIN_DATA}/<session_id>/`, keyed by the stab
   one line per decision, discriminated by a `kind` field
   (`envelope_start`, `write_allowed`, `write_refused`, `staged`, `limit_hit`,
   `bash_commit_blocked`, `envelope_end`) matching the engine's event `kind` vocabulary.
-  This is the self-contained verdict's input — the plugin never parses Claude Code's
-  own transcript, sidestepping its version-fragile format. **Note:** this flat log is
-  the plugin's private shape; it is *not* what the engine ingests (see Verdict below).
+  This is the self-contained verdict's input — enforcement and verdict *grading* never
+  parse Claude Code's own transcript, sidestepping its version-fragile format. (Two
+  narrow, gracefully-degrading exceptions read the transcript: the post-hoc cost
+  estimate and the optional engine path — see Verdict.) **Note:** this flat log is the
+  plugin's private shape; it is *not* what the engine ingests (see Verdict below).
 
 ## Enforcement (PreToolUse → `enforce.js`)
 
@@ -141,6 +149,24 @@ defines its own check names over the enforced dimensions it directly observed:
 
 Output written to `.boundary/verdict.json` + a one-line summary.
 
+### Spend visibility (post-hoc cost estimate)
+
+Separate from the walled *enforcement*, `verdict.js` recovers the visceral cost number.
+At `SessionEnd` it parses the Claude Code transcript (path supplied in the hook input)
+for the per-turn token usage CC records, prices it with a bundled rate card (same axes
+as the engine — input / cached / cache-write / output), and adds an informational
+`estimated_cost` field to the verdict — e.g. *"~$0.28 this session (≈45k in / 7k out)"*.
+
+This is an **estimate, not an enforced cap**, and is the **one** place the plugin parses
+Claude Code's own transcript — a single, contained version-fragility point. If the
+transcript shape changes or token fields are absent, the cost line degrades to
+`"unavailable"`; it never fails the verdict or blocks a run.
+
+**Assumption to validate before building:** that CC's transcript carries per-turn token
+usage in a parseable shape (it should — `/cost` derives session cost from it). Confirm
+against a live CC version; if false, spend visibility drops and the enforced-dimension
+verdict is unaffected.
+
 **Optional engine upgrade — requires a transcript transform, not the flat log.** The
 engine's `ThirdUmpire.grade()` does **not** read a flat `events.jsonl`; it reads a
 *transcript* whose lines are discriminated by a `type` field and pulls the enforcement
@@ -167,7 +193,7 @@ Read/Grep     → enforce.js : unstaged-read cap → allow/deny + event
 Write/Edit    → enforce.js : stage gate → allowlist → cardinality → allow/deny + event
 Bash          → enforce.js : stage gate → commit denylist → allow/deny + event
 /boundary:stage           : write staged.json + staged event
-SessionEnd    → verdict.js : envelope_end → grade events.jsonl → verdict.json (+ engine if present)
+SessionEnd    → verdict.js : envelope_end → grade events.jsonl + parse transcript for cost estimate → verdict.json (+ engine if present)
 ```
 
 ## Testing
@@ -177,7 +203,10 @@ event, newState}` and `grade(events) → verdict`. Both are pure functions of th
 inputs — unit-tested with `node --test` by feeding synthetic hook-input JSON and state,
 asserting the decision, the emitted event, and the verdict. No live Claude Code needed
 (same mock philosophy as `benchmarks/`). The thin `scripts/*.js` only do stdin/stdout +
-file I/O around `lib/`.
+file I/O around `lib/`. The cost estimator is likewise pure —
+`estimateCost(transcriptLines, rateCard) → {dollars, in_tok, out_tok}` — tested by
+feeding a synthetic transcript with token fields and asserting the estimate, plus a
+case with token fields absent asserting the graceful `"unavailable"` degrade.
 
 **End-to-end fixture:** replay a session — `SessionStart` → unstaged-`Read`×4 (4th
 denied) → `/boundary:stage` → `Write` allowed → out-of-allowlist `Write` denied →
@@ -189,7 +218,8 @@ pass, `writes_inside_allowlist` fail).
 
 Published as a Claude Code plugin (marketplace entry / installable from the repo),
 separate from the PyPI `boundary-envelope` package. The README states the non-goals
-(spend/taint) up front so the enforcement envelope is not mistaken for the full engine.
+(live spend *enforcement* / taint) up front — and that spend appears as a post-hoc
+*estimate*, not a cap — so the enforcement envelope is not mistaken for the full engine.
 
 ## Risks / open questions
 
@@ -198,8 +228,13 @@ separate from the PyPI `boundary-envelope` package. The README states the non-go
   `verdict.js` cleans up its session dir after emitting.
 - **`permission_mode` interactions** (e.g. `bypassPermissions`) may pre-empt a `deny`.
   Verify against a live version; document any mode where enforcement is advisory.
-- **CC transcript format drift** is avoided by design (we author our own log), but the
-  *optional* engine path over CC's transcript is not attempted for that reason.
+- **CC transcript format drift** is avoided for enforcement/verdict (we author our own
+  log). Two deliberate exceptions parse CC's transcript: spend visibility (one parse at
+  `SessionEnd`) and the *optional* engine path — both contained, both degrade gracefully.
+- **Transcript token availability** (spend visibility) is *assumed, not verified here*:
+  that CC's transcript records per-turn token usage in a parseable form. Validate against
+  a live version before building the estimator; the cost line degrades to `"unavailable"`
+  if absent, never blocking.
 - **SessionEnd on abrupt termination** may not fire; the verdict is best-effort. The
   event log still exists for a later manual verdict — self-contained via `lib/grade.js`,
   or via `boundary third-umpire` after the same transcript transform (never on the flat
