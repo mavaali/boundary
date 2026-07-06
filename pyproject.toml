@@ -1,6 +1,10 @@
 [project]
-name = "boundary"
-version = "0.11.1"
+# Distribution name on PyPI (the bare `boundary` name is taken by an unrelated
+# project). The import package (`boundary`) and the `boundary` console command
+# are unchanged: `pip install boundary-envelope`, then `import boundary` / run
+# `boundary`.
+name = "boundary-envelope"
+version = "0.12.0"
 description = "Tool-calling agent harness with envelopes, staging gates, schedules, and post-run evaluation"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -23,6 +27,11 @@ dependencies = [
     "pydantic>=2.0",
     "PyYAML>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mavaali/boundary"
+Repository = "https://github.com/mavaali/boundary"
+Changelog = "https://github.com/mavaali/boundary/blob/main/CHANGELOG.md"
 
 [project.scripts]
 boundary = "boundary.cli:main"
@@ -81,9 +90,6 @@ include = ["boundary*"]
 ]
 "share/boundary/examples/workspaces/sample-repo/tests" = [
     "examples/workspaces/sample-repo/tests/access_checks.py",
-]
-"share/boundary/examples/workspaces/sample-repo/scratch" = [
-    "examples/workspaces/sample-repo/scratch/.gitkeep",
 ]
 
 [tool.ruff]
