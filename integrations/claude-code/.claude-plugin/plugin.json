@@ -1,0 +1,6 @@
+{
+  "name": "boundary",
+  "description": "Enforce an envelope contract (write allowlist, cardinality, staging pivot, commit denylist) on a Claude Code session and grade it with a boundary.third-umpire/v1 verdict.",
+  "version": "0.1.0",
+  "author": { "name": "Mihir Wagle" }
+}
