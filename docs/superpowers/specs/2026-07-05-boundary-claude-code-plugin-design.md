@@ -80,10 +80,13 @@ Per-session state under `${CLAUDE_PLUGIN_DATA}/<session_id>/`, keyed by the stab
 
 - `state.json` — counters (`writes_executed`, `unstaged_reads`), `staged` flag.
 - `staged.json` — the staged thesis (thesis / hypotheses / evidence_plan / intended_write).
-- `events.jsonl` — a **Boundary-schema** event log the hooks author as they enforce
+- `events.jsonl` — the plugin's **own** enforcement log the hooks append as they run:
+  one line per decision, discriminated by a `kind` field
   (`envelope_start`, `write_allowed`, `write_refused`, `staged`, `limit_hit`,
-  `bash_commit_blocked`, `envelope_end`). This is the verdict's input — the plugin
-  never parses Claude Code's own transcript, sidestepping its version-fragile format.
+  `bash_commit_blocked`, `envelope_end`) matching the engine's event `kind` vocabulary.
+  This is the self-contained verdict's input — the plugin never parses Claude Code's
+  own transcript, sidestepping its version-fragile format. **Note:** this flat log is
+  the plugin's private shape; it is *not* what the engine ingests (see Verdict below).
 
 ## Enforcement (PreToolUse → `enforce.js`)
 
@@ -126,21 +129,35 @@ guaranteed-pinned context — narrow.
 
 ## Verdict (SessionEnd → `verdict.js`)
 
-Appends `envelope_end`, then grades `events.jsonl` into a `boundary.third-umpire/v1`
-document (same schema as the engine). Self-contained checks cover the **enforced**
-dimensions the plugin directly observed:
+Appends an `envelope_end` line to `events.jsonl`, then grades it into a
+`boundary.third-umpire/v1` document (same schema id as the engine). The plugin owns
+both the writer (`enforce.js`) and this self-contained reader (`lib/grade.js`), so it
+defines its own check names over the enforced dimensions it directly observed:
 
 - `writes_inside_allowlist` (any `write_refused` for path → fail)
 - `produced_output` (`writes_executed >= min_writes` → the liveness floor)
 - `staging_pivot` (a `staged` event exists, before the first write)
-- `commit_policy_held` (any `bash_commit_blocked`)
+- `commit_denylist_held` (any `bash_commit_blocked` event)
 
-Output written to `.boundary/verdict.json` + a one-line summary. **Optional engine
-upgrade:** if `boundary` is on `PATH`, additionally run
-`boundary third-umpire events.jsonl --format json` for the full check suite — it grades
-natively because the log is already Boundary-format — and link its richer verdict.
-(Token-dependent checks like `spend_pacing` will be inert, since the log carries no
-token counts; the enforced-dimension checks are accurate.)
+Output written to `.boundary/verdict.json` + a one-line summary.
+
+**Optional engine upgrade — requires a transcript transform, not the flat log.** The
+engine's `ThirdUmpire.grade()` does **not** read a flat `events.jsonl`; it reads a
+*transcript* whose lines are discriminated by a `type` field and pulls the enforcement
+events from a **nested** list at `envelope_end["events"]` (each `{kind, tool, detail,
+iteration}`). So if `boundary` is on `PATH`, `verdict.js` must first **transform** its
+`events.jsonl` into an engine-shaped transcript:
+
+- an `{"type":"envelope_start", writable_paths, min_writes, max_writes, require_staging, …}` line,
+- an `{"type":"envelope_end", writes_executed, writes_attempted, …, "events":[ …the plugin's enforcement events as {kind,tool,detail,iteration}… ]}` line,
+- an `{"type":"end","iterations":N}` line,
+
+then run `boundary third-umpire <transcript> --format json` and link the richer verdict.
+Token-dependent checks (e.g. `spend_pacing`) and prose checks (grounding, claim-labels)
+will be inert — the plugin has no token counts and no `assistant`/`tool_result` prose
+lines — but the enforced-dimension checks are accurate. This transform is a small,
+bounded, independently-testable task; the self-contained verdict above is the source of
+truth and does not depend on it.
 
 ## Data flow
 
