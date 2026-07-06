@@ -412,7 +412,9 @@ function ev(kind, tool, detail) { return { kind, tool, detail }; }
 function decide(envelope, state, tool) {
   const s = { ...state };
   const name = tool.name;
-  const stagingOn = envelope.require_staging;
+  // Mirror the engine: staging gates only when require_staging AND writable_paths is
+  // non-empty (envelope.py staging_required = require_staging and bool(writable_paths)).
+  const stagingOn = envelope.require_staging && (envelope.writable_paths || []).length > 0;
 
   // 1. Unstaged-read cap
   if (stagingOn && !s.staged && (name === 'Read' || name === 'Grep')) {
@@ -432,7 +434,10 @@ function decide(envelope, state, tool) {
       'Stage a thesis with /boundary:stage before writing or running commands.', s);
   }
 
-  // 5. Commit denylist (Bash)
+  // 5. Commit denylist (Bash). NB: unlike the Python engine, a successful Bash is
+  // intentionally NOT counted against max_writes — in CC, Bash is not a first-class
+  // write tool and PreToolUse sees only the pre-execution call. This matches the spec's
+  // enforcement list; do not "fix" it toward the engine.
   if (name === 'Bash' && envelope.deny_commits) {
     const c = bashCommandIsCommit((tool.input && tool.input.command) || '');
     if (c.isCommit) return deny('bash_commit_blocked', name, `command starts with '${c.matched}' (irreversible)`, s, false);
@@ -566,6 +571,7 @@ test('produces envelope_start, envelope_end-with-nested-events, end', () => {
   assert.ok(byType.envelope_start && byType.envelope_end && byType.end);
   assert.deepStrictEqual(byType.envelope_start.writable_paths, ['out/**']);
   assert.strictEqual(byType.envelope_end.events[0].kind, 'write_refused');
+  assert.strictEqual(byType.envelope_end.events[0].tool, 'write_file'); // CC name mapped to engine name
   assert.ok('iteration' in byType.envelope_end.events[0]);
 });
 ```
@@ -573,10 +579,16 @@ test('produces envelope_start, envelope_end-with-nested-events, end', () => {
 - [ ] **Step 2: Run → fail.**
 - [ ] **Step 3: Implement**
 ```js
+// Map CC tool names to the engine's tool vocabulary. The engine's staging_pivot /
+// budget_pacing checks filter write_allowed events on ("write_file","edit_file","bash")
+// (third_umpire.py) — without this mapping the optional engine verdict sees zero writes
+// and mis-grades those checks. Self-contained verdict (lib/grade.js) is unaffected.
+const ENGINE_TOOL = { Write: 'write_file', Edit: 'edit_file', Bash: 'bash', Read: 'read_file', Grep: 'grep' };
+
 function toEngineTranscript(events, envelope, summary) {
   const nested = events
     .filter((e) => e.kind !== 'envelope_start' && e.kind !== 'envelope_end')
-    .map((e, i) => ({ kind: e.kind, tool: e.tool || '', detail: e.detail || '', iteration: i + 1 }));
+    .map((e, i) => ({ kind: e.kind, tool: ENGINE_TOOL[e.tool] || e.tool || '', detail: e.detail || '', iteration: i + 1 }));
   return [
     { type: 'envelope_start', writable_paths: envelope.writable_paths, min_writes: envelope.min_writes,
       max_writes: envelope.max_writes, require_staging: envelope.require_staging },
@@ -626,7 +638,10 @@ test('absent usage degrades to unavailable', () => {
 - [ ] **Step 2: Run → fail.**
 - [ ] **Step 3: Implement**
 ```js
-// USD per 1M tokens; keep in sync with boundary/envelope.py token_rates.
+// USD per 1M tokens for a common subset of models (values match
+// boundary/envelope.py token_rates where they overlap). This is an estimate card,
+// not a full mirror; unlisted models fall back to the conservative flat rate in
+// rateFor() below — NOT the engine's per-axis max_rate policy. Widen as needed.
 const DEFAULT_RATES = {
   'claude-sonnet-4.6': { input: 3.0, cached: 0.30, cache_write: 3.75, output: 15.0 },
   'claude-opus-4.7':   { input: 15.0, cached: 1.50, cache_write: 18.75, output: 75.0 },
