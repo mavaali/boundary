@@ -1,6 +1,7 @@
 # Boundary
 
 [![selftest](https://github.com/mavaali/boundary/actions/workflows/selftest.yml/badge.svg)](https://github.com/mavaali/boundary/actions/workflows/selftest.yml)
+[![PyPI](https://img.shields.io/pypi/v/boundary-envelope)](https://pypi.org/project/boundary-envelope/)
 
 **Agents do not need more trust. They need a boundary.**
 
@@ -302,15 +303,18 @@ rather than from scratch. That is Boundary's differentiator.
 
 ## Install
 
-Public alpha — pin to a tag once you have a workflow you like.
+```bash
+pipx install boundary-envelope     # isolated (recommended), or: pip install boundary-envelope
+```
+
+Then run `boundary`. The PyPI distribution is **`boundary-envelope`** (the bare
+`boundary` name is taken by an unrelated project); the console command and the
+import package are both `boundary`.
+
+Latest unreleased from source:
 
 ```bash
-# Recommended: isolated install via pipx
 pipx install git+https://github.com/mavaali/boundary.git
-
-# Or in a venv
-python3 -m venv .venv && source .venv/bin/activate
-pip install git+https://github.com/mavaali/boundary.git
 ```
 
 Requires Python 3.10+. After install, authenticate the Copilot backend once:
