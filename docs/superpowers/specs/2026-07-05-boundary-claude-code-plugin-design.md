@@ -154,8 +154,11 @@ Output written to `.boundary/verdict.json` + a one-line summary.
 Separate from the walled *enforcement*, `verdict.js` recovers the visceral cost number.
 At `SessionEnd` it parses the Claude Code transcript (path supplied in the hook input)
 for the per-turn token usage CC records, prices it with a bundled rate card (same axes
-as the engine — input / cached / cache-write / output), and adds an informational
-`estimated_cost` field to the verdict — e.g. *"~$0.28 this session (≈45k in / 7k out)"*.
+as the engine — input / cached / cache-write / output), and writes the estimate into
+the verdict's free-form `summary` as `estimated_dollars` — **the same field the engine's
+own summary already carries** — so it is purely additive and claims no new
+`boundary.third-umpire/v1` schema surface. Surfaced as e.g. *"~$0.28 this session
+(≈45k in / 7k out)"*.
 
 This is an **estimate, not an enforced cap**, and is the **one** place the plugin parses
 Claude Code's own transcript — a single, contained version-fragility point. If the
@@ -204,9 +207,11 @@ inputs — unit-tested with `node --test` by feeding synthetic hook-input JSON a
 asserting the decision, the emitted event, and the verdict. No live Claude Code needed
 (same mock philosophy as `benchmarks/`). The thin `scripts/*.js` only do stdin/stdout +
 file I/O around `lib/`. The cost estimator is likewise pure —
-`estimateCost(transcriptLines, rateCard) → {dollars, in_tok, out_tok}` — tested by
-feeding a synthetic transcript with token fields and asserting the estimate, plus a
-case with token fields absent asserting the graceful `"unavailable"` degrade.
+`estimateCost(transcriptLines, rateCard) → {dollars, in_tok, out_tok}` (where `dollars`
+prices all four rate-card axes — input / cached / cache-write / output — and
+`in_tok`/`out_tok` are display aggregates) — tested by feeding a synthetic transcript
+with token fields and asserting the estimate, plus a case with token fields absent
+asserting the graceful `"unavailable"` degrade.
 
 **End-to-end fixture:** replay a session — `SessionStart` → unstaged-`Read`×4 (4th
 denied) → `/boundary:stage` → `Write` allowed → out-of-allowlist `Write` denied →
