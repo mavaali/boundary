@@ -23,18 +23,20 @@ Independent of Scout/Clawpilot — works from any shell with Python 3.10+.
 
 ## Install
 
-Public alpha. Recommended path is an isolated install via `pipx`:
+Recommended path is an isolated install via `pipx`:
 
 ```bash
-pipx install git+https://github.com/mavaali/boundary.git
+pipx install boundary-envelope     # or: pip install boundary-envelope
 boundary --help
 ```
 
-Or with a venv:
+The PyPI distribution is `boundary-envelope` (the bare `boundary` name is taken by
+an unrelated project); the console command and import package are both `boundary`.
+
+For the latest unreleased code, install from source:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install git+https://github.com/mavaali/boundary.git
+pipx install git+https://github.com/mavaali/boundary.git
 ```
 
 ### Contributor setup (editable install)
