@@ -6,6 +6,11 @@ const stateLib = require('../lib/state');
 
 // Pure, testable core: (hook input, io) -> hook-output object.
 function handle(input, io) {
+  // The staging mechanism cannot itself be gated by staging: let the plugin's own
+  // stage-write invocation through regardless of staged state.
+  if (input.tool_name === 'Bash' && /stage-write\.js/.test((input.tool_input && input.tool_input.command) || '')) {
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse' } };
+  }
   const sid = input.session_id;
   const envelope = io.loadEnvelope(input);
   const counters = io.readState(sid);
