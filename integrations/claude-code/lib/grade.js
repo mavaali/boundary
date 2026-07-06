@@ -25,4 +25,24 @@ function grade(events, envelope, summary) {
 
   return { schema: 'boundary.third-umpire/v1', verdict, transcript_path: null, summary: summary || {}, checks };
 }
-module.exports = { grade };
+
+// Map CC tool names to the engine's tool vocabulary. The engine's staging_pivot /
+// budget_pacing checks filter write_allowed events on ("write_file","edit_file","bash")
+// (third_umpire.py) — without this mapping the optional engine verdict sees zero writes
+// and mis-grades those checks. Self-contained verdict (lib/grade.js) is unaffected.
+const ENGINE_TOOL = { Write: 'write_file', Edit: 'edit_file', Bash: 'bash', Read: 'read_file', Grep: 'grep' };
+
+function toEngineTranscript(events, envelope, summary) {
+  const nested = events
+    .filter((e) => e.kind !== 'envelope_start' && e.kind !== 'envelope_end')
+    .map((e, i) => ({ kind: e.kind, tool: ENGINE_TOOL[e.tool] || e.tool || '', detail: e.detail || '', iteration: i + 1 }));
+  return [
+    { type: 'envelope_start', writable_paths: envelope.writable_paths, min_writes: envelope.min_writes,
+      max_writes: envelope.max_writes, require_staging: envelope.require_staging },
+    { type: 'envelope_end', writes_executed: summary.writes_executed || 0,
+      writes_attempted: summary.writes_attempted || 0, events: nested },
+    { type: 'end', iterations: nested.length },
+  ];
+}
+
+module.exports = { grade, toEngineTranscript };
