@@ -8,8 +8,20 @@ const DEFAULT_RATES = {
   'claude-haiku-4.5':  { input: 0.80, cached: 0.08, cache_write: 1.00, output: 4.0 },
 };
 
+// Conservative fallback for unlisted models: the per-axis max over the known rate
+// card, so the fallback can't drift out of sync with DEFAULT_RATES as it's edited.
+function maxRate(rates) {
+  const v = Object.values(rates);
+  return {
+    input: Math.max(...v.map((r) => r.input)),
+    cached: Math.max(...v.map((r) => r.cached)),
+    cache_write: Math.max(...v.map((r) => r.cache_write)),
+    output: Math.max(...v.map((r) => r.output)),
+  };
+}
+
 function rateFor(rates, model) {
-  return rates[model] || { input: 15.0, cached: 1.5, cache_write: 18.75, output: 75.0 }; // conservative fallback
+  return rates[model] || maxRate(rates);
 }
 
 function estimateCost(lines, rates) {

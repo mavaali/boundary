@@ -12,7 +12,10 @@ function grade(events, envelope, summary) {
   checks.push(check('produced_output', writesExec >= minWrites, 'fail',
     `${writesExec} write(s), min_writes=${minWrites}`));
 
-  if (envelope && envelope.require_staging) {
+  // Mirror decide()'s stagingOn: staging only gates when require_staging AND
+  // writable_paths is non-empty (envelope.py staging_required = require_staging and bool(writable_paths)).
+  const stagingOn = envelope && envelope.require_staging && (envelope.writable_paths || []).length > 0;
+  if (stagingOn) {
     checks.push(check('staging_pivot', has('staged'), 'fail',
       has('staged') ? 'staged before writing' : 'staging required but never staged'));
   }

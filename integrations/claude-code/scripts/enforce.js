@@ -3,12 +3,22 @@ const path = require('node:path');
 const os = require('node:os');
 const { loadEnvelope, decide } = require('../lib/envelope');
 const stateLib = require('../lib/state');
+const { resolveEnvelope } = require('../lib/resolve');
+
+// Exempt ONLY a real `node <path>/stage-write.js ...` invocation: argv[0] basename
+// must be `node` and argv[1] basename must be `stage-write.js`. A substring/regex match
+// would let anything mentioning "stage-write.js" anywhere (e.g. a shell comment) bypass
+// all enforcement, including the commit denylist.
+function isStageWriteInvocation(command) {
+  const parts = (command || '').trim().split(/\s+/);
+  return parts.length >= 2 && path.basename(parts[0]) === 'node' && path.basename(parts[1]) === 'stage-write.js';
+}
 
 // Pure, testable core: (hook input, io) -> hook-output object.
 function handle(input, io) {
   // The staging mechanism cannot itself be gated by staging: let the plugin's own
   // stage-write invocation through regardless of staged state.
-  if (input.tool_name === 'Bash' && /stage-write\.js/.test((input.tool_input && input.tool_input.command) || '')) {
+  if (input.tool_name === 'Bash' && isStageWriteInvocation((input.tool_input && input.tool_input.command) || '')) {
     return { hookSpecificOutput: { hookEventName: 'PreToolUse' } };
   }
   const sid = input.session_id;
@@ -42,10 +52,7 @@ function realIo() {
   const baseDir = process.env.CLAUDE_PLUGIN_DATA || os.tmpdir();
   return {
     loadEnvelope(input) {
-      const dir = stateLib.sessionDir(baseDir, input.session_id);
-      try { return JSON.parse(fs.readFileSync(path.join(dir, 'envelope.json'), 'utf8')); } catch (e) {}
-      try { return loadEnvelope(JSON.parse(fs.readFileSync(path.join(input.cwd || '.', '.boundary.json'), 'utf8'))); } catch (e) {}
-      return loadEnvelope(null);
+      return resolveEnvelope(baseDir, input.session_id, input.cwd);
     },
     readState: (sid) => stateLib.readState(baseDir, sid),
     readStaged: (sid) => stateLib.readStaged(baseDir, sid),
@@ -65,4 +72,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { handle };
+module.exports = { handle, isStageWriteInvocation };

@@ -38,3 +38,15 @@ test('refused write re-anchors on staged thesis', () => {
   assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /THESIS-XYZ/);
 });
+
+test('unstaged Bash command merely mentioning stage-write.js in a comment is DENIED, not exempt', () => {
+  const io = fakeIo({ staged: null });
+  const out = handle({ session_id: 's', tool_name: 'Bash', tool_input: { command: 'git push origin main # stage-write.js' } }, io);
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('real node stage-write.js invocation, unstaged, defers (exempt)', () => {
+  const io = fakeIo({ staged: null });
+  const out = handle({ session_id: 's', tool_name: 'Bash', tool_input: { command: 'node /x/scripts/stage-write.js "T"' } }, io);
+  assert.strictEqual(out.hookSpecificOutput.permissionDecision, undefined);
+});

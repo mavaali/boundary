@@ -5,12 +5,13 @@ const { spawnSync } = require('node:child_process');
 const { grade, toEngineTranscript } = require('../lib/grade');
 const { estimateCost, DEFAULT_RATES } = require('../lib/cost');
 const stateLib = require('../lib/state');
+const { resolveEnvelope } = require('../lib/resolve');
 
 const WRITE_KINDS = ['write_allowed', 'write_refused', 'limit_hit'];
 
 function handle(input, io) {
   const sid = input.session_id;
-  const envelope = io.readEnvelope(sid);
+  const envelope = io.readEnvelope(sid, input.cwd);
   io.appendEvent(sid, { kind: 'envelope_end', tool: '', detail: '' });
   const events = io.readEvents(sid);
   const counters = io.readState(sid);
@@ -19,6 +20,7 @@ function handle(input, io) {
     writes_attempted: events.filter((e) => WRITE_KINDS.includes(e.kind)).length,
   };
   const verdict = grade(events, envelope, summary);
+  verdict.transcript_path = input.transcript_path || null;
 
   // Post-hoc cost estimate; degrades to "unavailable", never throws.
   let cost = null;
@@ -49,10 +51,7 @@ function handle(input, io) {
 function realIo() {
   const baseDir = process.env.CLAUDE_PLUGIN_DATA || os.tmpdir();
   return {
-    readEnvelope(sid) {
-      try { return JSON.parse(fs.readFileSync(path.join(stateLib.sessionDir(baseDir, sid), 'envelope.json'), 'utf8')); }
-      catch (e) { return require('../lib/envelope').loadEnvelope(null); }
-    },
+    readEnvelope: (sid, cwd) => resolveEnvelope(baseDir, sid, cwd),
     readEvents: (sid) => stateLib.readEvents(baseDir, sid),
     readState: (sid) => stateLib.readState(baseDir, sid),
     appendEvent: (sid, e) => stateLib.appendEvent(baseDir, sid, e),

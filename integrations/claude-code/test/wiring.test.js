@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+test('plugin.json name is boundary', () => {
+  const p = JSON.parse(fs.readFileSync(path.join(__dirname, '../.claude-plugin/plugin.json'), 'utf8'));
+  assert.strictEqual(p.name, 'boundary');
+});
+
 test('hooks.json declares SessionStart, PreToolUse (with matcher), SessionEnd', () => {
   const h = JSON.parse(fs.readFileSync(path.join(__dirname, '../hooks/hooks.json'), 'utf8'));
   assert.ok(h.hooks.SessionStart && h.hooks.SessionEnd);
