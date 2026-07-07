@@ -23,8 +23,11 @@ Launch Claude Code with the plugin loaded (session-only, no install needed):
 claude --plugin-dir /Users/mihirwagle/projects/boundary/integrations/claude-code
 ```
 
+> If you changed the plugin while Claude Code was running, restart it (or run
+> `/reload-plugins`) so the updated hooks and scripts load.
+
 Confirm the hooks are active: run **`/hooks`** — you should see `SessionStart`,
-`PreToolUse` (matcher `Write|Edit|Bash|Read|Grep`), and `SessionEnd` sourced from the
+`PreToolUse` (matcher `Write|Edit|Bash|Read|Grep`), and `Stop` sourced from the
 `boundary` plugin. Confirm the command exists: type `/boundary:` and look for `stage`.
 
 ## Walkthrough — give Claude each prompt, observe the outcome
@@ -42,9 +45,11 @@ Validates: staging gate. **(hook-driven — should work)**
 **Step 3 — STAGE (the make-or-break checkpoint).**
 Prompt: `/boundary:stage Thesis: the brief lists three items; I will write a one-line summary to out/summary.md.`
 Then prompt: *"Now write the one-line summary to out/summary.md."*
-- ✅ If staging registered: the write is **ALLOWED** (Claude Code may ask you to approve the write — approve it).
-- ❌ If the write is **STILL DENIED** ("stage a thesis first"): staging did not register — this is the **Known issue** below. Stop here and report back; the remaining steps are gated on staging.
-Validates: **the session-id / data-dir assumption** — the highest-risk item.
+Expect: the write is **ALLOWED** (Claude Code may prompt you to approve it — approve).
+`/boundary:stage` runs `stage-write.js`, which records the thesis to
+`<cwd>/.boundary/state/staged.json`; the enforce hook reads the same cwd-keyed dir, so
+they agree with no session-id or env-var dependency.
+Validates: the staging pivot works cross-process (hook ↔ Bash-invoked script).
 
 **Step 4 — write allowlist** (only reachable if Step 3 worked).
 Prompt: *"Write a note to notes.md in the project root."*
@@ -60,33 +65,30 @@ Expect: **DENIED** — commit-class command (`curl`).
 Validates: commit denylist. **(hook-driven — should work)**
 
 **Step 7 — verdict + cost.**
-Exit Claude Code (end the session). Then:
+The verdict runs on the `Stop` event (each time Claude finishes a response), rewriting
+`<cwd>/.boundary/verdict.json` — so after your last turn it reflects the whole session:
 ```bash
 cat /tmp/boundary-cc-test/.boundary/verdict.json
 ```
 Expect: a `boundary.third-umpire/v1` document with `verdict: "FAIL"` (a write was refused),
-`staging_pivot` passed (if Step 3 worked), and `summary.estimated_dollars` — a **number**
-if the transcript carried token usage (this also validates the cost/transcript assumption),
-or `"unavailable"` if not.
-Validates: `SessionEnd` fires + verdict written + cost estimate.
+`staging_pivot` passed, and `summary.estimated_dollars` — a **number** if the transcript
+carried token usage (this also validates the cost/transcript assumption), or `"unavailable"`.
+Validates: `Stop` hook fires + verdict written + cost estimate.
 
-## Known issue — Step 3 (staging)
+## How it works (why staging survives)
 
-Per Claude Code's docs, `${CLAUDE_PLUGIN_DATA}` and the session id are given to **hook**
-scripts (stdin/env), but **not** to a script run via the **Bash tool**. `/boundary:stage`
-runs `stage-write.js` via Bash, so it likely writes `staged.json` to the wrong data dir
-under a fallback session key — and the hooks never find it. If Step 3's re-write stays
-denied, that is this gap.
-
-**Fix (recommended before relying on the plugin):** store per-session state co-located
-under `<cwd>/.boundary/` (keyed by the project dir), which both the hooks (they receive
-`cwd` on stdin) and the Bash-invoked stage script (it runs in `cwd`) can agree on — with
-no dependence on env vars Claude Code doesn't pass to Bash tool calls.
+All per-session state lives under `<cwd>/.boundary/state/` (`state.json`,
+`events.jsonl`, `staged.json`, `envelope.json`), keyed by the project directory — not a
+session id or `CLAUDE_PLUGIN_DATA`. That is what lets the hooks (which receive `cwd` on
+stdin) and the Bash-invoked `stage-write.js` (which runs in `cwd`) agree, with no
+dependence on env vars Claude Code doesn't pass to Bash tool calls. A block is signaled
+by **exit code 2** (reason on stderr); a compliant call exits 0 and defers to Claude
+Code's normal permission flow.
 
 ## Inspecting state (optional debugging)
 
 ```bash
-ls -R ~/.claude/plugins/data/*/          # hook-written state (state.json, events.jsonl)
-# vs. where stage-write.js actually wrote (if different, that's the Step 3 gap):
-ls -R /tmp/*/                            # fallback location if CLAUDE_PLUGIN_DATA was unset
+ls -R /tmp/boundary-cc-test/.boundary/                 # state/ + verdict.json
+cat /tmp/boundary-cc-test/.boundary/state/events.jsonl # the enforcement event log
+cat /tmp/boundary-cc-test/.boundary/state/state.json   # counters (writes_executed, unstaged_reads)
 ```

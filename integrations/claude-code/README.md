@@ -21,7 +21,7 @@ to Claude Code's normal permission flow — it blocks, it does not auto-approve)
 - **Commit denylist** — `Bash` commands starting with `curl`/`wget`/`gh`/`git
   push|commit|tag`/… are denied.
 
-At `SessionEnd` a verdict is written to `<cwd>/.boundary/verdict.json`:
+At the end of each response (the `Stop` hook), a verdict is (re)written to `<cwd>/.boundary/verdict.json`:
 `writes_inside_allowlist`, `produced_output` (the floor), `staging_pivot`,
 `commit_denylist_held`, plus a post-hoc `summary.estimated_dollars` cost estimate.
 
@@ -79,25 +79,24 @@ no token counts or assistant prose); the enforced-dimension checks are accurate.
 
 ## Validate against a live Claude Code (required before release)
 
-Everything above is unit- and integration-tested with no live Claude Code. These
-items depend on Claude Code's runtime behavior and **must be confirmed against a
-real session** — some could require rework:
+The Claude Code integration was **live-tested and corrected**: blocking via **exit
+code 2** + reason on stderr (not a JSON `permissionDecision`, which this CC ignores),
+the **`Stop`** event for the verdict (there is no `SessionEnd`), and state co-located
+under **`<cwd>/.boundary/state/`** — no `CLAUDE_PLUGIN_DATA` or session-id dependency.
+Verified against real script subprocesses (only `cwd`, no env vars): unstaged /
+off-allowlist / over-cardinality / commit calls exit 2 and block with the reason on
+stderr; the Bash-invoked `stage-write.js` and the hooks agree on the cwd-keyed state
+so staging works cross-process. Still worth confirming in a full interactive session:
 
-- [ ] **`PreToolUse` `deny` actually blocks the tool.** Confirm a denied `Write`
-      does not execute. Check `permission_mode` interactions — notably whether
-      `bypassPermissions` mode pre-empts the deny (if so, document that enforcement
-      is advisory in that mode).
-- [ ] **⚠️ Session id for `stage-write.js`.** `/boundary:stage` runs
-      `scripts/stage-write.js`, which keys staging state on `CLAUDE_SESSION_ID`.
-      **Confirm Claude Code exposes a stable session id to a Bash-invoked script.**
-      If it does not, the staging command must be reworked (e.g. key state on the
-      cwd instead of the session id). This is the highest-risk assumption.
-- [ ] **`${CLAUDE_PLUGIN_DATA}`** is populated and stable across a session (state,
-      events, envelope, staged marker all live there).
-- [ ] **Transcript carries per-turn token usage.** `summary.estimated_dollars`
-      parses `transcript_path` for `message.usage` (`input_tokens`, `output_tokens`,
-      `cache_read_input_tokens`, `cache_creation_input_tokens`). Confirm the shape;
-      if it differs, adjust `lib/cost.js`'s reader (it degrades to `"unavailable"`
-      rather than break).
-- [ ] **`SessionEnd` fires** and writes `<cwd>/.boundary/verdict.json` (it may not
-      fire on abrupt termination — the verdict is best-effort).
+- [ ] **A denied tool visibly does not execute**, and `permission_mode` doesn't
+      pre-empt the exit-2 block — notably whether `bypassPermissions` mode ignores it
+      (if so, document that enforcement is advisory in that mode).
+- [ ] **Transcript carries per-turn token usage.** `summary.estimated_dollars` parses
+      `transcript_path` for `message.usage` (`input_tokens`, `output_tokens`,
+      `cache_read_input_tokens`, `cache_creation_input_tokens`). If the shape differs,
+      adjust `lib/cost.js`'s reader (it degrades to `"unavailable"` rather than break).
+- [ ] **The `Stop` hook fires and writes the verdict.** It runs each turn (rewriting
+      `verdict.json`); the final one reflects the whole session.
+- [ ] **Parallel tool calls** (Claude batching several reads/writes at once) don't race
+      the counter in `state.json`. If the unstaged-read cap under-counts under batched
+      reads, switch counters to derive from the append-only `events.jsonl`.
