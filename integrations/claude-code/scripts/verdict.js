@@ -5,16 +5,14 @@ const { spawnSync } = require('node:child_process');
 const { grade, toEngineTranscript } = require('../lib/grade');
 const { estimateCost, DEFAULT_RATES } = require('../lib/cost');
 const stateLib = require('../lib/state');
-const { resolveEnvelope } = require('../lib/resolve');
 
 const WRITE_KINDS = ['write_allowed', 'write_refused', 'limit_hit'];
 
 function handle(input, io) {
-  const sid = input.session_id;
-  const envelope = io.readEnvelope(sid, input.cwd);
-  io.appendEvent(sid, { kind: 'envelope_end', tool: '', detail: '' });
-  const events = io.readEvents(sid);
-  const counters = io.readState(sid);
+  const envelope = io.readEnvelope();
+  io.appendEvent({ kind: 'envelope_end', tool: '', detail: '' });
+  const events = io.readEvents();
+  const counters = io.readState();
   const summary = {
     writes_executed: counters.writes_executed || 0,
     writes_attempted: events.filter((e) => WRITE_KINDS.includes(e.kind)).length,
@@ -22,7 +20,6 @@ function handle(input, io) {
   const verdict = grade(events, envelope, summary);
   verdict.transcript_path = input.transcript_path || null;
 
-  // Post-hoc cost estimate; degrades to "unavailable", never throws.
   let cost = null;
   try {
     const lines = io.readTranscript(input.transcript_path);
@@ -36,33 +33,29 @@ function handle(input, io) {
     verdict.summary.estimated_dollars = 'unavailable';
   }
 
-  // Optional engine upgrade (best-effort; requires the transcript transform).
   if (io.hasEngine()) {
     try {
       const engineVerdict = io.runEngine(toEngineTranscript(events, envelope, summary));
       if (engineVerdict) verdict.engine = engineVerdict;
-    } catch (e) { /* best-effort */ }
+    } catch (e) {}
   }
 
   io.writeVerdict(input.cwd, verdict);
   return verdict;
 }
 
-function realIo() {
-  const baseDir = process.env.CLAUDE_PLUGIN_DATA || os.tmpdir();
+function realIo(input) {
+  const stateDir = path.join(input.cwd || '.', '.boundary', 'state');
   return {
-    readEnvelope: (sid, cwd) => resolveEnvelope(baseDir, sid, cwd),
-    readEvents: (sid) => stateLib.readEvents(baseDir, sid),
-    readState: (sid) => stateLib.readState(baseDir, sid),
-    appendEvent: (sid, e) => stateLib.appendEvent(baseDir, sid, e),
+    readEnvelope: () => stateLib.readEnvelopeFile(stateDir) || require('../lib/envelope').loadEnvelope(null),
+    readEvents: () => stateLib.readEvents(stateDir),
+    readState: () => stateLib.readState(stateDir),
+    appendEvent: (e) => stateLib.appendEvent(stateDir, e),
     readTranscript(p) {
       if (!p) return null;
       return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     },
-    hasEngine() {
-      try { return spawnSync('boundary', ['--help'], { stdio: 'ignore' }).status === 0; }
-      catch (e) { return false; }
-    },
+    hasEngine() { try { return spawnSync('boundary', ['--help'], { stdio: 'ignore' }).status === 0; } catch (e) { return false; } },
     runEngine(transcriptLines) {
       const tmp = path.join(os.tmpdir(), `boundary-cc-${process.pid}-${Date.now()}.jsonl`);
       fs.writeFileSync(tmp, transcriptLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
@@ -88,9 +81,8 @@ if (require.main === module) {
   process.stdin.on('end', () => {
     let input = {};
     try { input = JSON.parse(raw); } catch (e) {}
-    try { handle(input, realIo()); } catch (e) { process.stderr.write(`[boundary] verdict error: ${e.message}\n`); }
+    try { handle(input, realIo(input)); } catch (e) { process.stderr.write(`[boundary] verdict error: ${e.message}\n`); }
     process.exit(0);
   });
 }
-
 module.exports = { handle };

@@ -1,30 +1,21 @@
-const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-const { loadEnvelope, decide } = require('../lib/envelope');
-const stateLib = require('../lib/state');
+const { decide } = require('../lib/envelope');
 const { resolveEnvelope } = require('../lib/resolve');
+const stateLib = require('../lib/state');
 
-// Exempt ONLY a real `node <path>/stage-write.js ...` invocation: argv[0] basename
-// must be `node` and argv[1] basename must be `stage-write.js`. A substring/regex match
-// would let anything mentioning "stage-write.js" anywhere (e.g. a shell comment) bypass
-// all enforcement, including the commit denylist.
 function isStageWriteInvocation(command) {
   const parts = (command || '').trim().split(/\s+/);
   return parts.length >= 2 && path.basename(parts[0]) === 'node' && path.basename(parts[1]) === 'stage-write.js';
 }
 
-// Pure, testable core: (hook input, io) -> hook-output object.
+// Pure core: (hook input, io) -> { decision: 'allow'|'deny', reason }.
 function handle(input, io) {
-  // The staging mechanism cannot itself be gated by staging: let the plugin's own
-  // stage-write invocation through regardless of staged state.
   if (input.tool_name === 'Bash' && isStageWriteInvocation((input.tool_input && input.tool_input.command) || '')) {
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse' } };
+    return { decision: 'allow', reason: '' };
   }
-  const sid = input.session_id;
-  const envelope = io.loadEnvelope(input);
-  const counters = io.readState(sid);
-  const staged = io.readStaged(sid);            // { thesis, ... } or null
+  const envelope = io.loadEnvelope();
+  const counters = io.readState();
+  const staged = io.readStaged();
   const state = {
     writes_executed: counters.writes_executed || 0,
     unstaged_reads: counters.unstaged_reads || 0,
@@ -32,32 +23,19 @@ function handle(input, io) {
     thesis: staged ? staged.thesis : undefined,
   };
   const r = decide(envelope, state, { name: input.tool_name, input: input.tool_input });
-  io.writeState(sid, {
-    staged: state.staged,
-    writes_executed: r.state.writes_executed,
-    unstaged_reads: r.state.unstaged_reads,
-  });
-  if (r.event) io.appendEvent(sid, r.event);
-  const hookSpecificOutput = { hookEventName: 'PreToolUse' };
-  if (r.decision === 'deny') {
-    hookSpecificOutput.permissionDecision = 'deny';
-    hookSpecificOutput.permissionDecisionReason = r.reason;
-  }
-  // On allow: no permissionDecision -> Claude Code's normal permission flow.
-  return { hookSpecificOutput };
+  io.writeState({ staged: state.staged, writes_executed: r.state.writes_executed, unstaged_reads: r.state.unstaged_reads });
+  if (r.event) io.appendEvent(r.event);
+  return { decision: r.decision, reason: r.reason };
 }
 
-// Real io over lib/state + the plugin data dir + the resolved session envelope.
-function realIo() {
-  const baseDir = process.env.CLAUDE_PLUGIN_DATA || os.tmpdir();
+function realIo(input) {
+  const stateDir = path.join(input.cwd || '.', '.boundary', 'state');
   return {
-    loadEnvelope(input) {
-      return resolveEnvelope(baseDir, input.session_id, input.cwd);
-    },
-    readState: (sid) => stateLib.readState(baseDir, sid),
-    readStaged: (sid) => stateLib.readStaged(baseDir, sid),
-    writeState: (sid, s) => stateLib.writeState(baseDir, sid, s),
-    appendEvent: (sid, e) => stateLib.appendEvent(baseDir, sid, e),
+    loadEnvelope: () => resolveEnvelope(stateDir, input.cwd),
+    readState: () => stateLib.readState(stateDir),
+    readStaged: () => stateLib.readStaged(stateDir),
+    writeState: (s) => stateLib.writeState(stateDir, s),
+    appendEvent: (e) => stateLib.appendEvent(stateDir, e),
   };
 }
 
@@ -67,7 +45,9 @@ if (require.main === module) {
   process.stdin.on('end', () => {
     let input = {};
     try { input = JSON.parse(raw); } catch (e) {}
-    process.stdout.write(JSON.stringify(handle(input, realIo())));
+    let res = { decision: 'allow', reason: '' };
+    try { res = handle(input, realIo(input)); } catch (e) { process.exit(0); } // fail-open: a hook bug must not brick the session
+    if (res.decision === 'deny') { process.stderr.write((res.reason || 'ENVELOPE REFUSED') + '\n'); process.exit(2); }
     process.exit(0);
   });
 }

@@ -2,6 +2,6 @@
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/start.js" }] }],
     "PreToolUse": [{ "matcher": "Write|Edit|Bash|Read|Grep", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/enforce.js" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/verdict.js" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/verdict.js" }] }]
   }
 }

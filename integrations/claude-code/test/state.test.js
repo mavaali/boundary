@@ -8,24 +8,30 @@ const state = require('../lib/state');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bstate-'));
 
 test('readState returns defaults when missing', () => {
-  const b = tmp();
-  assert.deepStrictEqual(state.readState(b, 's1'), { staged: false, writes_executed: 0, unstaged_reads: 0 });
+  const d = tmp();
+  assert.deepStrictEqual(state.readState(d), { staged: false, writes_executed: 0, unstaged_reads: 0 });
 });
 test('writeState/readState round-trips', () => {
-  const b = tmp();
-  state.writeState(b, 's1', { staged: true, writes_executed: 2, unstaged_reads: 1 });
-  assert.deepStrictEqual(state.readState(b, 's1'), { staged: true, writes_executed: 2, unstaged_reads: 1 });
+  const d = tmp();
+  state.writeState(d, { staged: true, writes_executed: 2, unstaged_reads: 1 });
+  assert.deepStrictEqual(state.readState(d), { staged: true, writes_executed: 2, unstaged_reads: 1 });
 });
 test('appendEvent accumulates; readEvents empty when missing', () => {
-  const b = tmp();
-  assert.deepStrictEqual(state.readEvents(b, 's1'), []);
-  state.appendEvent(b, 's1', { kind: 'a' });
-  state.appendEvent(b, 's1', { kind: 'b' });
-  assert.deepStrictEqual(state.readEvents(b, 's1').map((e) => e.kind), ['a', 'b']);
+  const d = tmp();
+  assert.deepStrictEqual(state.readEvents(d), []);
+  state.appendEvent(d, { kind: 'a' });
+  state.appendEvent(d, { kind: 'b' });
+  assert.deepStrictEqual(state.readEvents(d).map((e) => e.kind), ['a', 'b']);
 });
 test('staged: null when missing, round-trips when written', () => {
-  const b = tmp();
-  assert.strictEqual(state.readStaged(b, 's1'), null);
-  state.writeStaged(b, 's1', { thesis: 'T' });
-  assert.deepStrictEqual(state.readStaged(b, 's1'), { thesis: 'T' });
+  const d = tmp();
+  assert.strictEqual(state.readStaged(d), null);
+  state.writeStaged(d, { thesis: 'T' });
+  assert.deepStrictEqual(state.readStaged(d), { thesis: 'T' });
+});
+test('saveEnvelope/readEnvelopeFile round-trips; null when missing', () => {
+  const d = tmp();
+  assert.strictEqual(state.readEnvelopeFile(d), null);
+  state.saveEnvelope(d, { max_writes: 5 });
+  assert.deepStrictEqual(state.readEnvelopeFile(d), { max_writes: 5 });
 });

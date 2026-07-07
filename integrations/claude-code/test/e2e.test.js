@@ -3,52 +3,53 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const SID = 'e2e';
 
-function run(script, input, env) {
-  const r = spawnSync('node', [path.join(ROOT, 'scripts', script)], { input: JSON.stringify(input), encoding: 'utf8', env });
-  if (!r.stdout) return '';
-  try { return JSON.parse(r.stdout); } catch (e) { return r.stdout; }
+function runHook(script, input, cwd) {
+  return spawnSync('node', [path.join(ROOT, 'scripts', script)], { input: JSON.stringify(input), cwd, encoding: 'utf8' });
 }
-const dec = (o) => (o && o.hookSpecificOutput ? o.hookSpecificOutput.permissionDecision : undefined);
 
 test('end-to-end: gate -> stage -> write -> refuse -> cardinality -> commit -> verdict', () => {
-  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'be2e-pdata-'));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'be2e-cwd-'));
   fs.writeFileSync(path.join(cwd, '.boundary.json'),
     JSON.stringify({ writable_paths: ['out/**'], max_writes: 2, min_writes: 1, max_unstaged_reads: 3 }));
-  const env = { ...process.env, CLAUDE_PLUGIN_DATA: baseDir, CLAUDE_SESSION_ID: SID };
-  const pre = (name, input) => run('enforce.js', { session_id: SID, cwd, tool_name: name, tool_input: input }, env);
 
-  // SessionStart resolves + saves the envelope
-  run('start.js', { session_id: SID, cwd }, env);
+  const pre = (name, input) => runHook('enforce.js', { cwd, tool_name: name, tool_input: input }, cwd);
 
-  // 3 unstaged reads allowed (defer), 4th denied by the unstaged-read cap
-  assert.strictEqual(dec(pre('Read', { file_path: 'a' })), undefined);
-  assert.strictEqual(dec(pre('Read', { file_path: 'b' })), undefined);
-  assert.strictEqual(dec(pre('Read', { file_path: 'c' })), undefined);
-  assert.strictEqual(dec(pre('Read', { file_path: 'd' })), 'deny');
+  // SessionStart resolves + saves the envelope, co-located under <cwd>/.boundary/state/
+  runHook('start.js', { cwd }, cwd);
+  assert.ok(fs.existsSync(path.join(cwd, '.boundary', 'state', 'envelope.json')));
 
-  // write before staging denied
-  assert.strictEqual(dec(pre('Write', { file_path: 'out/a.md' })), 'deny');
+  // 3 unstaged reads allowed (exit 0), 4th denied by the unstaged-read cap (exit 2)
+  assert.strictEqual(pre('Read', { file_path: 'a' }).status, 0);
+  assert.strictEqual(pre('Read', { file_path: 'b' }).status, 0);
+  assert.strictEqual(pre('Read', { file_path: 'c' }).status, 0);
+  const denyRead = pre('Read', { file_path: 'd' });
+  assert.strictEqual(denyRead.status, 2);
+  assert.match(denyRead.stderr, /stage/i);
 
-  // stage (runs the real stage-write script)
-  execFileSync('node', [path.join(ROOT, 'scripts', 'stage-write.js'), 'MY THESIS'], { env });
+  // write before staging denied (exit 2)
+  assert.strictEqual(pre('Write', { file_path: 'out/a.md' }).status, 2);
 
-  // staged: in-allowlist write defers (1st), off-allowlist denied, 2nd write ok, 3rd hits cardinality
-  assert.strictEqual(dec(pre('Write', { file_path: 'out/a.md' })), undefined);
-  assert.strictEqual(dec(pre('Write', { file_path: 'bad/x.md' })), 'deny');
-  assert.strictEqual(dec(pre('Write', { file_path: 'out/b.md' })), undefined);
-  assert.strictEqual(dec(pre('Write', { file_path: 'out/c.md' })), 'deny');
+  // stage (runs the real stage-write script, in the same cwd)
+  const staged = spawnSync('node', [path.join(ROOT, 'scripts', 'stage-write.js'), 'MY', 'THESIS'], { cwd, encoding: 'utf8' });
+  assert.strictEqual(staged.status, 0);
+  assert.ok(fs.existsSync(path.join(cwd, '.boundary', 'state', 'staged.json')));
+
+  // staged: in-allowlist write allows (1st), off-allowlist denied, 2nd write ok, 3rd hits cardinality
+  assert.strictEqual(pre('Write', { file_path: 'out/a.md' }).status, 0);
+  assert.strictEqual(pre('Write', { file_path: 'bad/x.md' }).status, 2);
+  assert.strictEqual(pre('Write', { file_path: 'out/b.md' }).status, 0);
+  assert.strictEqual(pre('Write', { file_path: 'out/c.md' }).status, 2);
 
   // commit-class bash denied
-  assert.strictEqual(dec(pre('Bash', { command: 'curl http://x' })), 'deny');
+  assert.strictEqual(pre('Bash', { command: 'curl http://x' }).status, 2);
 
-  // SessionEnd verdict (no transcript -> cost unavailable)
-  run('verdict.js', { session_id: SID, cwd, transcript_path: '/nonexistent-transcript' }, env);
+  // Stop event verdict (no transcript -> cost unavailable)
+  const v = runHook('verdict.js', { cwd, transcript_path: '/nonexistent-transcript' }, cwd);
+  assert.strictEqual(v.status, 0);
   const verdict = JSON.parse(fs.readFileSync(path.join(cwd, '.boundary', 'verdict.json'), 'utf8'));
   const chk = (n) => verdict.checks.find((x) => x.name === n);
   assert.strictEqual(verdict.schema, 'boundary.third-umpire/v1');
