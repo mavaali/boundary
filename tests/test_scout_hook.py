@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import datetime
 import json
 
 from boundary import headless
 from boundary.schedule import ScheduleConfig
+
+TODAY = datetime.datetime.now().strftime("%Y-%m-%d")
 
 
 def _config(tmp_path, notify):
@@ -36,9 +39,9 @@ def test_scout_hook_event_written_for_warn(tmp_path, monkeypatch):
         stop_reason="stop",
         third_umpire_verdict="WARN",
         transcript_path="/tmp/transcript.jsonl",
-        written_files=[str(tmp_path / "scratch" / "wiki-health-2026-06-16.md")],
+        written_files=[str(tmp_path / "scratch" / f"wiki-health-{TODAY}.md")],
         error_text=None,
-        rendered_paths=["scratch/wiki-health-2026-06-16.md"],
+        rendered_paths=[f"scratch/wiki-health-{TODAY}.md"],
         wall_seconds=12.5,
         estimated_dollars=0.03,
     )
@@ -49,7 +52,7 @@ def test_scout_hook_event_written_for_warn(tmp_path, monkeypatch):
     assert event["schedule"] == "wiki-health"
     assert event["third_umpire_verdict"] == "WARN"
     assert event["channel"] == "teams_dm"
-    assert event["summary_file"].endswith("/scratch/wiki-health-2026-06-16.md")
+    assert event["summary_file"].endswith(f"/scratch/wiki-health-{TODAY}.md")
 
 
 def test_scout_hook_not_written_for_pass_when_warn_fail(tmp_path, monkeypatch):
