@@ -140,6 +140,12 @@ def _match_segments(pat: list[str], path: list[str]) -> bool:
     return False
 
 
+# Version of the spec_dict() policy document. Bump when a field is added,
+# removed, or its meaning changes — consumers compare hashes only within a
+# version.
+ENVELOPE_SPEC_VERSION = 1
+
+
 @dataclass
 class Envelope:
     writable_paths: list[str] = field(default_factory=list)
@@ -328,6 +334,50 @@ class Envelope:
             if _anchored_glob_match(pat, norm):
                 return True
         return False
+
+    def spec_dict(self) -> dict:
+        """The envelope as a versioned, serializable policy document.
+
+        Policy only — pricing (token_rates) is deliberately excluded, so a
+        rate-card update never changes the hash of what the run was *allowed
+        to do*. This is the artifact a run receipt signs against and a
+        non-runner frontend (CC plugin, MCP gateway) can compile from.
+        """
+        return {
+            "spec_version": ENVELOPE_SPEC_VERSION,
+            "writable_paths": list(self.writable_paths),
+            "max_writes": self.max_writes,
+            "min_writes": self.min_writes,
+            "max_external": self.max_external,
+            "max_appends": self.max_appends,
+            "require_reason": self.require_reason,
+            "allow_bash": self.allow_bash,
+            "require_srt_for_bash": self.require_srt_for_bash,
+            "stop_on_ambiguity": self.stop_on_ambiguity,
+            "budget_pressure_at": list(self.budget_pressure_at),
+            "spend_pressure_at": list(self.spend_pressure_at),
+            "degrade_to": self.degrade_to,
+            "degrade_at": self.degrade_at,
+            "repeat_warn": self.repeat_warn,
+            "repeat_halt": self.repeat_halt,
+            "nudge_on_early_stop": self.nudge_on_early_stop,
+            "require_staging": self.require_staging,
+            "max_unstaged_reads": self.max_unstaged_reads,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_dollars": self.max_dollars,
+            "max_wall_seconds": self.max_wall_seconds,
+            "on_commit": self.on_commit,
+            "commit_allowlist": list(self.commit_allowlist),
+            "on_taint": self.on_taint,
+            "write_profile": self.write_profile,
+        }
+
+    def spec_hash(self) -> str:
+        """Canonical sha256 of spec_dict() — stable across processes and runs."""
+        import hashlib
+        canonical = json.dumps(self.spec_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass

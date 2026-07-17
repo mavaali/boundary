@@ -8,6 +8,15 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Added
+- **Envelope spec document** — `Envelope.spec_dict()` / `spec_hash()`: the
+  policy serialized as a versioned document (`spec_version: 1`, every
+  enforcement-bearing dimension) with a canonical sha256. Pricing
+  (`token_rates`) is excluded, so a rate-card update never changes the hash of
+  what a run was *allowed to do*. This is the anchor for run receipts (a
+  verdict that names the exact policy it graded against) and for non-runner
+  frontends (CC plugin, MCP gateway) compiling from the same envelope.
+
 ## [0.12.0] - 2026-07-05
 
 First release published to PyPI. The bare `boundary` name is taken by an
