@@ -13,6 +13,7 @@ Usage:
 """
 from __future__ import annotations
 import fnmatch
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,67 +21,25 @@ from typing import Any
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
+from boundary.kernel import (
+    BASH_COMMIT_DENYLIST,
+    _GIT_COMMIT_SUBCOMMANDS,
+    Decision,
+    EnvelopeEvent,
+    PolicyKernel,
+    bash_command_is_commit,
+)
 from boundary.loop import LoopResult, run_loop
 from boundary.tools.registry import Tool, ToolRegistry
 
+# The enforcement decision core lives in boundary.kernel (Item 0, v2): the
+# kernel is transport-agnostic so other frontends (Claude Code governor, MCP
+# gateway) can consume the same envelope semantics without the runner. This
+# module keeps the runner-facing surface: Envelope (policy dataclass),
+# EnvelopeRunner (loop frontend), and backward-compatible re-exports.
+_bash_command_is_commit = bash_command_is_commit
 
-# -----------------------------------------------------------------------------
-# COMMIT-TOOL KILL-LIST
-# -----------------------------------------------------------------------------
-# A "commit" tool is an irreversible external side effect: send email, post
-# Teams message, push commit, file ADO bug, submit expense report.
-#
-# Bash can sidestep typed commit tools trivially (`curl -X POST ...`, `gh
-# issue create`, `osascript`). We close the obvious paths with a basename
-# denylist: if bash's command starts with any of these binaries (basename of
-# argv[0]), the call is refused with instructions to use `bash_commit` instead.
-#
-# SLOPE GUARDRAILS — read before adding entries:
-#   - HARD CAP: 12 entries. At 13, stop and reconsider the model, don't extend.
-#   - NO REGEX, NO ARGUMENT INSPECTION except the single sanctioned `git`
-#     subcommand exception below.
-#   - If you find yourself wanting argv inspection on a SECOND binary, build a
-#     typed `kind="commit"` tool instead. That's why bash_commit exists.
-#   - The Third Umpire surfaces every bash_commit / commit-tool call in its verdict. If an
-#     agent shells out to `gh` repeatedly, the answer is a typed gh_* commit
-#     tool, NOT a longer denylist.
-# -----------------------------------------------------------------------------
-BASH_COMMIT_DENYLIST: tuple[str, ...] = (
-    "curl", "wget", "gh", "az", "mail", "sendmail", "osascript", "git",
-)
-# The ONLY sanctioned argv-inspection exception. `git status` / `git log` are
-# read; `git push` / `git commit` are commit. If a second binary ever needs
-# this, that's the signal to rethink the model.
-_GIT_COMMIT_SUBCOMMANDS: frozenset[str] = frozenset({"push", "commit", "tag"})
-
-
-def _bash_command_is_commit(command: str) -> tuple[bool, str]:
-    """Inspect a bash command string. Return (is_commit, reason).
-
-    Pure basename match on the first token. The single `git` exception
-    inspects argv[1] against _GIT_COMMIT_SUBCOMMANDS. No regex anywhere.
-    """
-    if not command or not command.strip():
-        return False, ""
-    parts = command.strip().split()
-    head = parts[0]
-    # Strip env-var assignments (FOO=bar curl ...) — take next token.
-    while "=" in head and not head.startswith("/") and not head.startswith("."):
-        if len(parts) < 2:
-            return False, ""
-        parts = parts[1:]
-        head = parts[0]
-    # Basename only; ignore path prefix.
-    import os as _os
-    base = _os.path.basename(head)
-    if base not in BASH_COMMIT_DENYLIST:
-        return False, ""
-    if base == "git":
-        sub = parts[1] if len(parts) > 1 else ""
-        if sub not in _GIT_COMMIT_SUBCOMMANDS:
-            return False, ""
-        return True, f"git {sub}"
-    return True, base
+ENVELOPE_SPEC_VERSION = 1
 
 
 @dataclass
@@ -167,13 +126,38 @@ class Envelope:
                     return True
         return False
 
+    def spec_dict(self) -> dict:
+        """The envelope as a versioned, serializable policy document.
 
-@dataclass
-class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow"
-    tool: str
-    detail: str
-    iteration: int
+        Policy only — pricing (token_rates) is deliberately excluded so a rate
+        update never changes the spec hash. This is the artifact run receipts
+        sign against (v2 Item 2) and other frontends compile from.
+        """
+        return {
+            "spec_version": ENVELOPE_SPEC_VERSION,
+            "writable_paths": list(self.writable_paths),
+            "max_writes": self.max_writes,
+            "min_writes": self.min_writes,
+            "max_external": self.max_external,
+            "max_appends": self.max_appends,
+            "require_reason": self.require_reason,
+            "allow_bash": self.allow_bash,
+            "stop_on_ambiguity": self.stop_on_ambiguity,
+            "budget_pressure_at": list(self.budget_pressure_at),
+            "require_staging": self.require_staging,
+            "max_unstaged_reads": self.max_unstaged_reads,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_dollars": self.max_dollars,
+            "max_wall_seconds": self.max_wall_seconds,
+            "on_commit": self.on_commit,
+            "commit_allowlist": list(self.commit_allowlist),
+            "on_taint": self.on_taint,
+        }
+
+    def spec_hash(self) -> str:
+        canonical = json.dumps(self.spec_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -208,262 +192,35 @@ def _make_enforced_tool(
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
 ) -> Tool:
-    """Wrap a tool so it consults the envelope before executing."""
+    """Wrap a tool so it consults the policy kernel before executing.
+
+    Thin frontend over PolicyKernel: pre_tool decides, this wrapper executes,
+    post_tool does success-only accounting. Halt flags are runner state, so
+    they stay here rather than in the kernel.
+    """
     original_fn = base.fn
+    kernel = PolicyKernel(envelope, counters=counters, events=events, iter_ref=iter_ref)
 
     def enforced(**kwargs):
-        i = iter_ref[0]
-        staging_required = envelope.require_staging and bool(envelope.writable_paths)
-
-        if staging_required and base.name == "read_file" and counters.get("staged", 0) == 0:
-            counters["unstaged_reads"] = counters.get("unstaged_reads", 0) + 1
-            if counters["unstaged_reads"] > envelope.max_unstaged_reads:
-                events.append(EnvelopeEvent(
-                    "staging_required", base.name,
-                    f"unstaged_reads={counters['unstaged_reads']} max={envelope.max_unstaged_reads}", i,
-                ))
-                return (
-                    "ENVELOPE REFUSED: orientation reads are exhausted. "
-                    "Call `stage_proposal` with a tentative answer, hypotheses, "
-                    "evidence plan, intended write, cost class, and kill criteria "
-                    "before doing more deep reads. Anti-boil-the-ocean rule: every "
-                    "next read must test or revise the staged answer."
-                )
-
-        if (
-            staging_required
-            and counters.get("staged", 0) == 0
-            and (base.kind in ("write", "commit") or base.name == "bash")
-        ):
-            events.append(EnvelopeEvent("staging_required", base.name, "write_or_commit_before_stage", i))
-            return (
-                "ENVELOPE REFUSED: stage the candidate answer before writing or "
-                "committing. Call `stage_proposal` first so write rejection resumes "
-                "from staging instead of restarting research."
-            )
-
-        # 1. Reason check
-        if envelope.require_reason and base.kind in ("write", "external", "commit"):
-            reason = kwargs.get("reason", "").strip() if isinstance(kwargs.get("reason"), str) else ""
-            if not reason:
-                events.append(EnvelopeEvent("missing_reason", base.name, "(no reason)", i))
-                return f"ENVELOPE REFUSED: tool '{base.name}' is a {base.kind} tool — you must include a non-empty 'reason' field."
-
-        # Helper: did the underlying tool return a soft error sentinel?
-        def _is_error_result(r) -> bool:
-            return isinstance(r, str) and r.startswith("ERROR:")
-
-        # 1b. Taint gate (Item 3) — tainted (untrusted external) content flowing
-        #     into a writable sink. Coarse: once any tainted read has happened,
-        #     every write/commit is a potential exfil channel.
-        if (
-            envelope.on_taint != "allow"
-            and counters.get("tainted_reads", 0) > 0
-            and (base.kind in ("write", "commit") or base.name == "bash")
-        ):
-            sources = counters.get("tainted_sources", [])  # type: ignore[assignment]
-            events.append(EnvelopeEvent(
-                "taint_flow", base.name,
-                f"on_taint={envelope.on_taint} tainted_reads={counters['tainted_reads']} "
-                f"sources={sources[:3]}", i,
-            ))
-            if envelope.on_taint == "refuse":
-                return (
-                    f"ENVELOPE REFUSED: this run read untrusted external content "
-                    f"(taint sources: {sources[:3]}) and a write to a shared/writable path "
-                    f"is a potential exfiltration channel (on_taint=refuse). Do not route "
-                    f"untrusted content into a write. If this flow is intentional and safe, "
-                    f"re-scope with on_taint=warn, or stage only trusted/derived content."
-                )
-            # warn: record the flow, let the write proceed.
-
-        # 2. append_file — continuation of a prior write_file. Counted against
-        #    max_appends, NOT max_writes. Lets the agent chunk a long write
-        #    across multiple tool calls to bypass per-response output caps.
-        if base.name == "append_file":
-            path = kwargs.get("path", "")
-            if not envelope.path_allowed(path):
-                events.append(EnvelopeEvent("write_refused", base.name, f"path={path}", i))
-                return (
-                    f"ENVELOPE REFUSED: path '{path}' is not in writable_paths "
-                    f"{envelope.writable_paths}."
-                )
-            if counters.get("appends_executed", 0) >= envelope.max_appends:
-                events.append(EnvelopeEvent("limit_hit", base.name, f"max_appends={envelope.max_appends}", i))
-                return f"ENVELOPE REFUSED: max_appends ({envelope.max_appends}) reached."
-            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
-            try:
-                result = original_fn(**kwargs_no_reason)
-            except Exception as e:
-                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
-                raise
-            if _is_error_result(result):
-                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
-                return result
-            counters["appends_executed"] = counters.get("appends_executed", 0) + 1
-            events.append(EnvelopeEvent("write_allowed", base.name, f"path={path} (append)", i))
-            return result
-
-        # 3. write_file / edit_file — count only on success. Failed attempts
-        #    (exceptions or "ERROR:" sentinels) bump writes_attempted but NOT
-        #    writes_executed, so a TypeError on missing kwargs doesn't burn the
-        #    write budget.
-        if base.kind == "write" and base.name in ("write_file", "edit_file"):
-            counters["writes_attempted"] = counters.get("writes_attempted", 0) + 1
-            path = kwargs.get("path", "")
-            if not envelope.path_allowed(path):
-                events.append(EnvelopeEvent("write_refused", base.name, f"path={path}", i))
-                return (
-                    f"ENVELOPE REFUSED: path '{path}' is not in writable_paths "
-                    f"{envelope.writable_paths}. Either confirm with the user (call ask_human) "
-                    f"or write only to allowed paths."
-                )
-            if counters.get("writes_executed", 0) >= envelope.max_writes:
-                events.append(EnvelopeEvent("limit_hit", base.name, f"max_writes={envelope.max_writes}", i))
-                return (
-                    f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached. "
-                    f"If you need to extend an existing write, use append_file (counted "
-                    f"against max_appends={envelope.max_appends}, not max_writes)."
-                )
-            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
-            try:
-                result = original_fn(**kwargs_no_reason)
-            except Exception as e:
-                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
-                raise
-            if _is_error_result(result):
-                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
-                return result
-            counters["writes_executed"] = counters.get("writes_executed", 0) + 1
-            events.append(EnvelopeEvent("write_allowed", base.name, f"path={path}", i))
-            return result
-
-        # 4. Bash special case — counts as a write iff envelope.allow_bash.
-        #    Same success-only accounting as write_file/edit_file.
-        if base.name == "bash":
-            if not envelope.allow_bash:
-                return "ENVELOPE REFUSED: bash is disabled for this run."
-            # Egress denylist — see BASH_COMMIT_DENYLIST docstring at top of file.
-            cmd_str = kwargs.get("command", "") if isinstance(kwargs.get("command"), str) else ""
-            is_commit, matched = _bash_command_is_commit(cmd_str)
-            if is_commit:
-                events.append(EnvelopeEvent(
-                    "bash_commit_blocked", base.name,
-                    f"matched={matched} command={cmd_str[:120]}", i,
-                ))
-                return (
-                    f"ENVELOPE REFUSED: bash command starts with '{matched}', "
-                    f"which is on the commit-tool denylist (irreversible side effect). "
-                    f"If this is intentional, call `bash_commit` with the same command "
-                    f"and a 'reason' field. The run's commit policy will decide whether "
-                    f"to allow, queue, ask, or refuse."
-                )
-            counters["writes_attempted"] = counters.get("writes_attempted", 0) + 1
-            if counters.get("writes_executed", 0) >= envelope.max_writes:
-                events.append(EnvelopeEvent("limit_hit", base.name, f"max_writes={envelope.max_writes}", i))
-                return f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached."
-            kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
-            try:
-                result = original_fn(**kwargs_no_reason)
-            except Exception as e:
-                events.append(EnvelopeEvent("write_failed", base.name, f"{type(e).__name__}: {e}", i))
-                raise
-            if _is_error_result(result):
-                events.append(EnvelopeEvent("write_failed", base.name, str(result)[:200], i))
-                return result
-            counters["writes_executed"] = counters.get("writes_executed", 0) + 1
-            events.append(EnvelopeEvent("write_allowed", base.name, "bash", i))
-            return result
-
-        # 5. Commit-tool gate — irreversible external actions.
-        if base.kind == "commit":
-            counters["commit_attempted"] = counters.get("commit_attempted", 0) + 1
-            policy = envelope.on_commit
-            allowlist = envelope.commit_allowlist or []
-            if policy == "allow" and (not allowlist or base.name in allowlist):
-                # Execute. For bash_commit we apply the same success-only
-                # accounting as a write so it counts against max_writes.
-                if base.name == "bash_commit":
-                    counters["writes_attempted"] = counters.get("writes_attempted", 0) + 1
-                    if counters.get("writes_executed", 0) >= envelope.max_writes:
-                        events.append(EnvelopeEvent("limit_hit", base.name, f"max_writes={envelope.max_writes}", i))
-                        return f"ENVELOPE REFUSED: max_writes ({envelope.max_writes}) reached."
-                kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
-                try:
-                    result = original_fn(**kwargs_no_reason)
-                except Exception as e:
-                    events.append(EnvelopeEvent("commit_refused", base.name, f"{type(e).__name__}: {e}", i))
-                    raise
-                if isinstance(result, str) and result.startswith("ERROR:"):
-                    events.append(EnvelopeEvent("commit_refused", base.name, str(result)[:200], i))
-                    return result
-                counters["commit_executed"] = counters.get("commit_executed", 0) + 1
-                if base.name == "bash_commit":
-                    counters["writes_executed"] = counters.get("writes_executed", 0) + 1
-                events.append(EnvelopeEvent("commit_allowed", base.name, f"policy=allow", i))
-                return result
-            # Not allowed by policy.
-            if policy == "queue":
-                if commit_halt_flag is not None:
-                    commit_halt_flag[0] = True
-                events.append(EnvelopeEvent(
-                    "commit_halt", base.name,
-                    f"queued for human approval — args={list(kwargs.keys())}", i,
-                ))
-                return (
-                    f"[HALTED] Commit tool '{base.name}' requires human approval. "
-                    f"The run will stop and be queued for review. "
-                    f"Args snapshot: {kwargs}"
-                )
-            if policy == "ask":
-                # Interactive: route through ask_human if available, otherwise
-                # fall back to refuse with explicit instructions.
-                if halt_flag is not None:
-                    halt_flag[0] = True
-                events.append(EnvelopeEvent(
-                    "commit_halt", base.name,
-                    f"ask_human required — args={list(kwargs.keys())}", i,
-                ))
-                return (
-                    f"[HALTED] Commit tool '{base.name}' requires explicit human "
-                    f"confirmation. Call `ask_human` describing the intended action "
-                    f"and the exact args, then re-attempt only if the human approves."
-                )
-            # Default / "refuse" / unknown policy / "allow" but not in allowlist
-            events.append(EnvelopeEvent(
-                "commit_refused", base.name,
-                f"policy={policy} allowlist={allowlist}", i,
-            ))
-            if policy == "allow" and allowlist and base.name not in allowlist:
-                return (
-                    f"ENVELOPE REFUSED: commit tool '{base.name}' is not in "
-                    f"this run's commit_allowlist {allowlist}. "
-                    f"Either re-scope the task to avoid this commit, or stop and "
-                    f"surface the gap via ask_human."
-                )
-            return (
-                f"ENVELOPE REFUSED: tool '{base.name}' is a commit tool "
-                f"(irreversible external side effect) and this run's commit policy "
-                f"is '{policy}'. Do not retry. If the task genuinely requires this "
-                f"commit, stop and report via ask_human — a human must re-scope "
-                f"the run with on_commit=allow + commit_allowlist=['{base.name}']."
-            )
-
-        # 6. External rate cap
-        if base.kind == "external":
-            counters["external_calls"] = counters.get("external_calls", 0) + 1
-            if counters["external_calls"] > envelope.max_external:
-                events.append(EnvelopeEvent("limit_hit", base.name, f"max_external={envelope.max_external}", i))
-                return f"ENVELOPE REFUSED: max_external ({envelope.max_external}) reached."
-            # Taint labeling (Item 3): external content is untrusted. Mark the run
-            # tainted so a later write to a writable sink trips the taint gate.
-            counters["tainted_reads"] = counters.get("tainted_reads", 0) + 1
-            src = kwargs.get("url") or kwargs.get("query") or base.name
-            counters.setdefault("tainted_sources", []).append(str(src)[:80])  # type: ignore[arg-type]
-
-        # 7. Default path — read tools and unmetered externals
+        decision = kernel.pre_tool(base.name, base.kind, kwargs)
+        if decision.action == "halt_queue":
+            if commit_halt_flag is not None:
+                commit_halt_flag[0] = True
+            return decision.message
+        if decision.action == "halt_ask":
+            if halt_flag is not None:
+                halt_flag[0] = True
+            return decision.message
+        if decision.action == "refuse":
+            return decision.message
         kwargs_no_reason = {k: v for k, v in kwargs.items() if k != "reason"}
-        return original_fn(**kwargs_no_reason)
+        try:
+            result = original_fn(**kwargs_no_reason)
+        except Exception as e:
+            kernel.post_tool(decision, base.name, kwargs, error=e)
+            raise
+        kernel.post_tool(decision, base.name, kwargs, result=result)
+        return result
 
     return Tool(
         name=base.name,
