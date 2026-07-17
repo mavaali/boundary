@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS runs (
     third_umpire_summary_json TEXT,
     transcript_path TEXT,
     written_files_json TEXT,
-    error TEXT
+    error TEXT,
+    tainted INTEGER DEFAULT 0,
+    taint_sources_json TEXT,
+    taint_cleared INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS runs_started_idx ON runs(started_at);
 CREATE INDEX IF NOT EXISTS runs_schedule_idx ON runs(schedule_name, started_at);
@@ -58,6 +61,7 @@ class History:
         self._conn = sqlite3.connect(str(self.db_path))
         self._migrate_legacy_columns()
         self._conn.executescript(SCHEMA)
+        self._migrate_taint_columns()
         self._conn.commit()
 
     def _migrate_legacy_columns(self) -> None:
@@ -77,6 +81,22 @@ class History:
                 self._conn.execute(f"ALTER TABLE runs RENAME COLUMN {old} TO {new}")
         self._conn.commit()
 
+    def _migrate_taint_columns(self) -> None:
+        """Add taint-lineage columns (v2 Item 1) to pre-existing DBs. Idempotent."""
+        existing = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        additions = {
+            "tainted": "INTEGER DEFAULT 0",
+            "taint_sources_json": "TEXT",
+            "taint_cleared": "INTEGER DEFAULT 0",
+        }
+        for col, decl in additions.items():
+            if col not in existing:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+        self._conn.commit()
+
     def record_run(self, *, schedule_name: str | None, persona: str | None,
                    workspace: str | None, started_at: float, ended_at: float,
                    stop_reason: str, iterations: int, writes_executed: int,
@@ -84,7 +104,8 @@ class History:
                    estimated_dollars: float, wall_seconds: float,
                    third_umpire_verdict: str | None, third_umpire_summary: dict | None,
                    transcript_path: str | None, written_files: list[str],
-                   error: str | None = None) -> int:
+                   error: str | None = None,
+                   tainted: bool = False, taint_sources: list | None = None) -> int:
         cur = self._conn.execute(
             """INSERT INTO runs(
                 started_at, ended_at, schedule_name, persona, workspace,
@@ -92,17 +113,74 @@ class History:
                 input_tokens, output_tokens, cached_input_tokens,
                 estimated_dollars, wall_seconds,
                 third_umpire_verdict, third_umpire_summary_json, transcript_path,
-                written_files_json, error
-            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?)""",
+                written_files_json, error,
+                tainted, taint_sources_json
+            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?, ?,?)""",
             (started_at, ended_at, schedule_name, persona, workspace,
              stop_reason, iterations, writes_executed,
              input_tokens, output_tokens, cached_input_tokens,
              estimated_dollars, wall_seconds,
              third_umpire_verdict, json.dumps(third_umpire_summary or {}), transcript_path,
-             json.dumps(written_files), error),
+             json.dumps(written_files), error,
+             1 if tainted else 0, json.dumps(taint_sources or [])),
         )
         self._conn.commit()
         return cur.lastrowid
+
+    # -- cross-run taint lineage (v2 Item 1) ---------------------------------
+
+    def taint_provenance(self, path: str) -> dict | None:
+        """Lineage of `path`'s most recent recorded writer run.
+
+        Returns {run_id, schedule_name, sources} if that run was tainted and
+        has not been human-cleared; None otherwise. The most recent writer
+        governs: a later clean run rewriting the file declassifies it.
+        """
+        rows = self._conn.execute(
+            "SELECT id, schedule_name, tainted, taint_cleared, "
+            "taint_sources_json, written_files_json FROM runs "
+            "WHERE written_files_json IS NOT NULL "
+            "ORDER BY started_at DESC, id DESC LIMIT 500",
+        ).fetchall()
+        for run_id, schedule_name, tainted, cleared, sources_json, files_json in rows:
+            try:
+                files = json.loads(files_json or "[]")
+            except json.JSONDecodeError:
+                continue
+            if path in files:
+                if tainted and not cleared:
+                    return {
+                        "run_id": run_id,
+                        "schedule_name": schedule_name,
+                        "sources": json.loads(sources_json or "[]"),
+                    }
+                return None
+        return None
+
+    def make_provenance(self, workspace: str | Path):
+        """A provenance oracle for the kernel: maps a read path (as the tool
+        receives it, usually workspace-relative) to taint lineage or None."""
+        ws = Path(workspace).expanduser()
+
+        def resolve(path: str) -> dict | None:
+            candidates = [str(path)]
+            p = Path(path)
+            if not p.is_absolute():
+                candidates.append(str(ws / p))
+            for candidate in candidates:
+                prov = self.taint_provenance(candidate)
+                if prov:
+                    return prov
+            return None
+
+        return resolve
+
+    def clear_taint(self, run_id: int) -> None:
+        """Human declassifier: mark a run's outputs reviewed-and-trusted so
+        future reads of its files no longer inherit taint."""
+        self._conn.execute(
+            "UPDATE runs SET taint_cleared=1 WHERE id=?", (run_id,))
+        self._conn.commit()
 
     def queue_review(self, *, schedule_name: str | None, persona: str | None,
                      question: str, options: list | None, transcript_path: str | None,

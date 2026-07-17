@@ -141,6 +141,8 @@ def _emit_scout_hook_event(
     rendered_paths: list[str],
     wall_seconds: float,
     estimated_dollars: float,
+    tainted: bool = False,
+    taint_sources: list | None = None,
 ) -> str | None:
     hook = _scout_hook_config(config)
     if not hook or not _should_emit_scout_hook(
@@ -172,6 +174,7 @@ def _emit_scout_hook_event(
         "error": error_text,
         "wall_seconds": wall_seconds,
         "estimated_dollars": estimated_dollars,
+        "taint": {"tainted": bool(tainted), "sources": list(taint_sources or [])},
         "channel": hook.get("channel", "teams_dm"),
         "created_at": int(time.time()),
     }
@@ -211,6 +214,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     wall_seconds = 0.0
     error_text: str | None = None
     review_id: int | None = None
+    tainted = False
+    taint_sources: list = []
 
     try:
         workspace = Path(config.workspace).expanduser()
@@ -269,7 +274,9 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             commit_allowlist=list(config.commit_allowlist or []),
             on_taint=config.on_taint,
         )
-        runner = EnvelopeRunner(agent, env)
+        # Cross-run taint lineage (v2 Item 1): reads of files written by a
+        # tainted, un-reviewed prior run inherit that run's taint.
+        runner = EnvelopeRunner(agent, env, provenance=history.make_provenance(workspace))
         result = runner.run(rendered_task, verbose=verbose)
 
         stop_reason = result.loop_result.stop_reason
@@ -280,6 +287,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         cached_input_tokens = result.cached_input_tokens
         estimated_dollars = result.estimated_dollars
         wall_seconds = result.wall_seconds
+        tainted = result.tainted_reads > 0
+        taint_sources = list(result.taint_sources)
         transcript_path = str(agent.transcript.path) if agent.transcript else None
 
         for rp in rendered_paths:
@@ -312,6 +321,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         third_umpire_verdict=third_umpire_verdict, third_umpire_summary=third_umpire_summary,
         transcript_path=transcript_path, written_files=written_files,
         error=error_text,
+        tainted=tainted, taint_sources=taint_sources,
     )
 
     if stop_reason == "ambiguity_halt" and config.on_ambiguity == "queue" and transcript_path:
@@ -340,6 +350,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         rendered_paths=config.rendered_writable_paths(),
         wall_seconds=wall_seconds,
         estimated_dollars=estimated_dollars,
+        tainted=tainted,
+        taint_sources=taint_sources,
     )
     _release_lock(lock_path)
     return {

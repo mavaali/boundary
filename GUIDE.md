@@ -528,6 +528,28 @@ in its verdict, and `stage_proposal` records the taint set that fed the thesis.
 > write post-taint, so reserve it for runs where no untrusted→write flow is ever
 > legitimate. Per-value / per-sink granularity is future work.
 
+### Cross-run taint lineage — the memory-poisoning channel
+
+Scheduled runs write summary files that later runs (and Scout) read. That makes
+a tainted run's outputs a *persistence* channel: an injection read on Tuesday
+can poison Wednesday's inputs. Lineage closes it:
+
+- Every headless run records whether it was tainted (and its taint sources) in
+  history alongside its written files.
+- When a later run reads a file whose **most recent recorded writer run** was
+  tainted and not human-reviewed, the read is labeled with a `taint_inherited`
+  event and the run becomes tainted — arming the same `--on-taint` gate for its
+  own writes. The read itself proceeds; lineage labels, it does not block reads.
+- A later **clean** run rewriting the file declassifies it (the most recent
+  writer governs).
+- **Human review is the declassifier:** after inspecting a tainted run's
+  outputs, run `boundary review approve <run-id>` — its files stop propagating
+  taint. `boundary history` shows `taint=YES` with the exact approve command.
+
+The Third Umpire emits a `taint_lineage` verdict line naming the source run,
+and the scout_hook event carries a `taint` block so Scout can route tainted
+runs to review instead of consuming their summaries blindly.
+
 ---
 
 ## Cost / budget knobs

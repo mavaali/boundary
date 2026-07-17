@@ -81,7 +81,7 @@ def bash_command_is_commit(command: str) -> tuple[bool, str]:
 
 @dataclass
 class EnvelopeEvent:
-    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "write_failed" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow"
+    kind: str  # "staged" | "staging_required" | "write_allowed" | "write_refused" | "write_failed" | "missing_reason" | "ambiguity_halt" | "limit_hit" | "commit_refused" | "commit_allowed" | "commit_halt" | "bash_commit_blocked" | "taint_flow" | "taint_inherited"
     tool: str
     detail: str
     iteration: int
@@ -111,11 +111,16 @@ class PolicyKernel:
         counters: dict | None = None,
         events: list[EnvelopeEvent] | None = None,
         iter_ref: list[int] | None = None,
+        provenance: Any = None,
     ):
         self.envelope = envelope
         self.counters = counters if counters is not None else {}
         self.events = events if events is not None else []
         self.iter_ref = iter_ref if iter_ref is not None else [0]
+        # Optional cross-run taint oracle (v2 Item 1): Callable[[str], dict|None]
+        # mapping a read path to {run_id, schedule_name, sources} when the
+        # file's most recent writer run was tainted and not human-cleared.
+        self.provenance = provenance
 
     # -- helpers -------------------------------------------------------------
 
@@ -336,7 +341,24 @@ class PolicyKernel:
             src = args.get("url") or args.get("query") or name
             c.setdefault("tainted_sources", []).append(str(src)[:80])
 
-        # 7. Default path — read tools and unmetered externals
+        # 7. Read-time taint inheritance (cross-run lineage, v2 Item 1) —
+        #    reading a file whose most recent writer run was tainted inherits
+        #    that taint. The read proceeds (labeled, not blocked); the same-run
+        #    taint gate above then governs any later write.
+        if name == "read_file" and self.provenance is not None:
+            path = args.get("path", "")
+            prov = self.provenance(path)
+            if prov:
+                c["tainted_reads"] = c.get("tainted_reads", 0) + 1
+                c.setdefault("tainted_sources", []).append(
+                    f"run:{prov.get('run_id')}:{path}"[:80])
+                self._event(
+                    "taint_inherited", name,
+                    f"path={path} run={prov.get('run_id')} "
+                    f"sources={prov.get('sources', [])[:2]}",
+                )
+
+        # 8. Default path — read tools and unmetered externals
         return Decision("allow")
 
     # -- post-execution accounting ----------------------------------------------

@@ -400,6 +400,22 @@ class ThirdUmpire:
                 severity="warn",
             ))
 
+        # Check 13b: taint lineage — reads that inherited taint from a prior
+        # run's outputs (the cross-run persistence channel, v2 Item 1).
+        lineage_events = [e for e in envelope_events if e["kind"] == "taint_inherited"]
+        if lineage_events:
+            report.checks.append(CheckResult(
+                "taint_lineage",
+                passed=False,
+                detail=(
+                    f"{len(lineage_events)} read(s) inherited taint from prior run outputs — "
+                    f"e.g. {lineage_events[0]['tool']}: {lineage_events[0]['detail'][:120]}. "
+                    f"If the source run's outputs were reviewed and are trusted, declassify "
+                    f"with `boundary review approve <run-id>`."
+                ),
+                severity="warn",
+            ))
+
         # Check 14: envelope downgrades — guardrails the operator disabled.
         # A run that turned off a gate must be visibly distinct from one that
         # never needed it.

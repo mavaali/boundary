@@ -8,6 +8,33 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+### Added
+- **Policy kernel (`boundary.kernel`)** — the envelope's enforcement decision
+  core (staging gate, write allowlist, taint gate, commit policy, denylist,
+  success-only accounting) extracted from the runner into a transport-agnostic
+  `PolicyKernel` with a `pre_tool`/`post_tool` API. Refusal messages, event
+  kinds, and counter semantics are unchanged; `_make_enforced_tool` is now a
+  thin frontend. `import boundary.kernel` pulls no model clients (package
+  exports are lazy), so future frontends — Claude Code governor, MCP gateway —
+  can consume the same envelope semantics without the runner. (v2 Item 0)
+- **Envelope spec document** — `Envelope.spec_dict()` / `spec_hash()`: a
+  versioned, canonical policy serialization with a stable sha256 (pricing
+  excluded). The artifact future run receipts sign against.
+- **Cross-run taint lineage** — the memory-poisoning defense (v2 Item 1).
+  History records each run's taint + sources alongside its written files;
+  a later run reading a file whose most recent writer run was tainted and
+  un-reviewed inherits the taint (`taint_inherited` event) and the existing
+  `--on-taint` gate then governs its writes. Human review declassifies:
+  `boundary review approve <run-id>`. A later clean rewrite of the file also
+  declassifies (most recent writer governs). Third Umpire emits a
+  `taint_lineage` verdict line; `boundary history` shows a taint column with
+  the approve command; the scout_hook event carries a `taint` block. Selftest
+  gains `taint_lineage_enforced` — **8 enforced, 0 gated**.
+
+### Fixed
+- Date-dependent scout-hook test fixture (hardcoded `2026-06-16`) now renders
+  today's date, so the suite is green on any day.
+
 ## [0.3.0] - 2026-06-16
 
 The lethal-trifecta-closing milestone: information-flow taint dimension, plus a

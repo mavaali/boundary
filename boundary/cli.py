@@ -91,6 +91,15 @@ def main(argv: list[str] | None = None) -> int:
     rq_resolve.add_argument("id", type=int)
     rq_resolve.add_argument("resolution", help="free-text resolution note")
 
+    rev = sub.add_parser("review", help="human review actions on completed runs")
+    rev_sub = rev.add_subparsers(dest="rev_cmd")
+    rev_approve = rev_sub.add_parser(
+        "approve",
+        help="declassify a run: its written files no longer propagate taint to future runs",
+    )
+    rev_approve.add_argument("run_id", type=int)
+    rev_approve.add_argument("--db", default=None, help="history DB path (default ~/.boundary/history.db)")
+
     tu = sub.add_parser(
         "third-umpire",
         help="grade a transcript against envelope eval",
@@ -319,9 +328,14 @@ def main(argv: list[str] | None = None) -> int:
                 on_taint=summary.get("on_taint"),
             )
             downgrade = f"  downgrade={','.join(tags)}" if tags else ""
+            if r.get("tainted"):
+                taint = "  taint=cleared" if r.get("taint_cleared") else \
+                    f"  taint=YES (approve: boundary review approve {r['id']})"
+            else:
+                taint = ""
             print(f"  {r['id']:4d}  {ts}  {r['schedule_name'] or '(adhoc)':30s} {r['persona'] or '-':10s} "
                   f"stop={r['stop_reason']:14s} umpire={verdict:5s} "
-                  f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s{downgrade}")
+                  f"writes={r['writes_executed']:2d} ${r['estimated_dollars'] or 0:.4f} {r['wall_seconds'] or 0:.0f}s{downgrade}{taint}")
         return 0
 
     if args.cmd == "review-queue":
@@ -346,6 +360,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      transcript: {r['transcript_path']}")
             print(f"      resolve: boundary review-queue resolve {r['id']} 'your note'")
         return 0
+
+    if args.cmd == "review":
+        from boundary.history import History
+        if getattr(args, "rev_cmd", None) == "approve":
+            h = History(args.db) if args.db else History()
+            h.clear_taint(args.run_id)
+            h.close()
+            print(f"[ok] run {args.run_id} approved — its outputs no longer propagate taint")
+            return 0
+        print("usage: boundary review approve <run-id>")
+        return 2
 
     if args.cmd == "third-umpire":
         from boundary.third_umpire import ThirdUmpire

@@ -306,6 +306,67 @@ def check_taint_flow() -> SelftestResult:
     )
 
 
+def check_taint_lineage() -> SelftestResult:
+    """Reading a file written by a tainted, un-reviewed prior run must arm the
+    taint gate for this run's writes; approving the source run must declassify
+    (v2 Item 1 — the cross-run memory-poisoning channel)."""
+    name = "taint_lineage_enforced"
+    from boundary.history import History
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ws = root / "ws"
+        ws.mkdir()
+        (ws / "notes.md").write_text("poisoned by a prior run", encoding="utf-8")
+        h = History(root / "h.db")
+        run_id = h.record_run(
+            schedule_name="redteam", persona="fury", workspace=str(ws),
+            started_at=1.0, ended_at=2.0, stop_reason="stop", iterations=1,
+            writes_executed=1, input_tokens=0, output_tokens=0,
+            cached_input_tokens=0, estimated_dollars=0.0, wall_seconds=1.0,
+            third_umpire_verdict="WARN", third_umpire_summary={},
+            transcript_path=None, written_files=[str(ws / "notes.md")],
+            tainted=True, taint_sources=["http://evil.test"],
+        )
+        resolve = h.make_provenance(ws)
+
+        def _attempt():
+            env = Envelope(writable_paths=["out.md"], on_taint="refuse")
+            env.require_staging = False
+            wsp = Workspace(root=ws)
+            base = ToolRegistry()
+            register_fs_tools(base, wsp)
+            counters: dict[str, int] = {}
+            events: list[EnvelopeEvent] = []
+            enforced = ToolRegistry()
+            for tool in base._tools.values():
+                enforced.register(_make_enforced_tool(
+                    tool, env, counters, events, [1], provenance=resolve))
+            enforced.get("read_file").call({"path": "notes.md"})
+            wr = enforced.get("write_file").call(
+                {"path": "out.md", "content": "x", "reason": "redteam"})
+            return wr, events
+
+        wr1, ev1 = _attempt()
+        blocked = (
+            "ENVELOPE REFUSED" in wr1
+            and any(e.kind == "taint_inherited" for e in ev1)
+            and not (ws / "out.md").exists()
+        )
+        h.clear_taint(run_id)
+        wr2, ev2 = _attempt()
+        declassified = wr2.startswith("wrote ") and not any(
+            e.kind == "taint_inherited" for e in ev2)
+        h.close()
+    passed = blocked and declassified
+    return SelftestResult(
+        name, passed=passed,
+        detail="tainted-run output armed the write gate; review approve declassified"
+        if passed
+        else f"lineage gate wrong: blocked={blocked} declassified={declassified}",
+    )
+
+
 # Order: enforced guarantees first, then gated (expected_fail) ones.
 CHECKS = [
     check_write_outside_allowlist,
@@ -315,6 +376,7 @@ CHECKS = [
     check_egress_blocked_empty_allowlist,
     check_denylist_bypass_blocked,
     check_taint_flow,
+    check_taint_lineage,
 ]
 
 

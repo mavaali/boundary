@@ -181,6 +181,8 @@ class EnvelopeRunResult:
     halted_for_commit: bool = False
     staged: bool = False
     unstaged_reads: int = 0
+    tainted_reads: int = 0
+    taint_sources: list = field(default_factory=list)
 
 
 def _make_enforced_tool(
@@ -191,6 +193,7 @@ def _make_enforced_tool(
     iter_ref: list[int],
     halt_flag: list[bool] | None = None,
     commit_halt_flag: list[bool] | None = None,
+    provenance=None,
 ) -> Tool:
     """Wrap a tool so it consults the policy kernel before executing.
 
@@ -199,7 +202,10 @@ def _make_enforced_tool(
     they stay here rather than in the kernel.
     """
     original_fn = base.fn
-    kernel = PolicyKernel(envelope, counters=counters, events=events, iter_ref=iter_ref)
+    kernel = PolicyKernel(
+        envelope, counters=counters, events=events, iter_ref=iter_ref,
+        provenance=provenance,
+    )
 
     def enforced(**kwargs):
         decision = kernel.pre_tool(base.name, base.kind, kwargs)
@@ -354,9 +360,11 @@ the loop if you exceed it.
 
 
 class EnvelopeRunner:
-    def __init__(self, agent: Agent, envelope: Envelope):
+    def __init__(self, agent: Agent, envelope: Envelope, provenance=None):
         self.agent = agent
         self.envelope = envelope
+        # Optional cross-run taint oracle (v2 Item 1); see PolicyKernel.
+        self.provenance = provenance
 
     def _enforced_registry(self, halt_flag, events, iter_ref, commit_halt_flag) -> ToolRegistry:
         new_reg = ToolRegistry()
@@ -365,6 +373,7 @@ class EnvelopeRunner:
             new_reg.register(_make_enforced_tool(
                 tool, self.envelope, counters, events, iter_ref,
                 halt_flag=halt_flag, commit_halt_flag=commit_halt_flag,
+                provenance=self.provenance,
             ))
         if self.envelope.stop_on_ambiguity:
             new_reg.register(_ask_human_tool(halt_flag, events, iter_ref))
@@ -598,6 +607,7 @@ class EnvelopeRunner:
                 commit_allowlist=list(self.envelope.commit_allowlist or []),
                 on_taint=self.envelope.on_taint,
                 tainted_reads=c.get("tainted_reads", 0),
+                taint_sources=list(c.get("tainted_sources", [])),
                 staged=bool(c.get("staged", 0)),
                 unstaged_reads=c.get("unstaged_reads", 0),
                 stage_calls=c.get("stage_calls", 0),
@@ -623,4 +633,6 @@ class EnvelopeRunner:
             halted_for_commit=commit_halt_flag[0],
             staged=bool(c.get("staged", 0)),
             unstaged_reads=c.get("unstaged_reads", 0),
+            tainted_reads=c.get("tainted_reads", 0),
+            taint_sources=list(c.get("tainted_sources", [])),
         )
