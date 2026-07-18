@@ -9,6 +9,22 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **Run receipts (`boundary.receipt/v1`)** — a portable artifact binding the two
+  things Boundary already produced separately: the policy
+  (`Envelope.spec_dict()` + `spec_hash()`) and the grade
+  (`boundary.third-umpire/v1`). A verdict alone says "the run was graded";
+  the receipt says *graded against this exact policy*. Every scheduled run now
+  emits one (new `runs.receipt_json` column, migrated on open; a
+  `<transcript>.receipt.json` file; and a `receipt` block on the `scout_hook`
+  event). `boundary receipt show <run-id>` prints it; `boundary receipt verify
+  <run-id>` re-hashes the embedded spec and re-grades the transcript — catching
+  a tampered policy, a tampered verdict, or a receipt re-pointed at a different
+  run — and exits non-zero on mismatch. The runner logs the full spec + hash
+  into `envelope_start` so receipts reconstruct from a transcript alone. New
+  selftest guarantee `receipt_verifies` — **9 enforced, 0 gated**. Self-reported,
+  not cryptographic provenance; signing can be layered on without a schema change.
+  `canonical_spec_hash()` is now a shared module function so an arbitrary stored
+  spec re-hashes identically to the one the run recorded.
 - **Envelope spec document** — `Envelope.spec_dict()` / `spec_hash()`: the
   policy serialized as a versioned document (`spec_version: 1`, every
   enforcement-bearing dimension) with a canonical sha256. Pricing

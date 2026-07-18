@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS runs (
     transcript_path TEXT,
     written_files_json TEXT,
     error TEXT,
-    attribution_json TEXT
+    attribution_json TEXT,
+    receipt_json TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_started_idx ON runs(started_at);
 CREATE INDEX IF NOT EXISTS runs_schedule_idx ON runs(schedule_name, started_at);
@@ -98,6 +99,8 @@ class History:
         # column already present, so only ALTER an existing table.
         if existing and "attribution_json" not in existing:
             self._conn.execute("ALTER TABLE runs ADD COLUMN attribution_json TEXT")
+        if existing and "receipt_json" not in existing:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN receipt_json TEXT")
         self._conn.commit()
 
     def record_run(self, *, schedule_name: str | None, persona: str | None,
@@ -107,7 +110,8 @@ class History:
                    estimated_dollars: float, wall_seconds: float,
                    third_umpire_verdict: str | None, third_umpire_summary: dict | None,
                    transcript_path: str | None, written_files: list[str],
-                   error: str | None = None, attribution: dict | None = None) -> int:
+                   error: str | None = None, attribution: dict | None = None,
+                   receipt: dict | None = None) -> int:
         cur = self._conn.execute(
             """INSERT INTO runs(
                 started_at, ended_at, schedule_name, persona, workspace,
@@ -115,17 +119,37 @@ class History:
                 input_tokens, output_tokens, cached_input_tokens,
                 estimated_dollars, wall_seconds,
                 third_umpire_verdict, third_umpire_summary_json, transcript_path,
-                written_files_json, error, attribution_json
-            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?)""",
+                written_files_json, error, attribution_json, receipt_json
+            ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?,?)""",
             (started_at, ended_at, schedule_name, persona, workspace,
              stop_reason, iterations, writes_executed,
              input_tokens, output_tokens, cached_input_tokens,
              estimated_dollars, wall_seconds,
              third_umpire_verdict, json.dumps(third_umpire_summary or {}), transcript_path,
-             json.dumps(written_files), error, json.dumps(attribution or {})),
+             json.dumps(written_files), error, json.dumps(attribution or {}),
+             json.dumps(receipt) if receipt is not None else None),
         )
         self._conn.commit()
         return cur.lastrowid
+
+    def set_receipt(self, run_id: int, receipt: dict) -> None:
+        """Attach a receipt to an already-recorded run (the receipt embeds the
+        run_id, which is only known after the row is inserted)."""
+        self._conn.execute(
+            "UPDATE runs SET receipt_json=? WHERE id=?",
+            (json.dumps(receipt), run_id))
+        self._conn.commit()
+
+    def get_receipt(self, run_id: int) -> dict | None:
+        """The stored run receipt (boundary.receipt/v1) for a run, or None."""
+        row = self._conn.execute(
+            "SELECT receipt_json FROM runs WHERE id=?", (run_id,)).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     def queue_review(self, *, schedule_name: str | None, persona: str | None,
                      question: str, options: list | None, transcript_path: str | None,

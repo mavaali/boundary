@@ -479,6 +479,28 @@ For envelope runs with staging enabled, Third Umpire also reports
 `staging_pivot`: whether `stage_proposal` happened before the first write and
 whether the run hit any staging refusals. This is the anti-boil-the-ocean check.
 
+### Run receipts
+
+A **receipt** (`boundary.receipt/v1`) binds the policy a run executed under to
+the grade it earned: the envelope's `spec_hash` + full `spec_dict()`, plus the
+Third Umpire verdict (`boundary.third-umpire/v1`), plus run metadata. A verdict
+alone says "the run was graded"; the receipt says *graded against this exact
+policy* — a portable, checkable claim for an audit trail or a CI/merge gate.
+
+Every scheduled run stores a receipt (history column + a `<transcript>.receipt.json`
+file next to the transcript) and the `scout_hook` event carries it.
+
+```bash
+boundary receipt show 42        # print the receipt JSON for run 42
+boundary receipt verify 42      # re-check it; exit non-zero on mismatch
+```
+
+`verify` re-hashes the embedded spec (must match `spec_hash`) and re-grades the
+transcript (verdict must match, and the transcript's own recorded policy hash
+must equal the receipt's — so a receipt can't be re-pointed at a different run).
+It is self-reported, not cryptographic provenance: the value is the audit trail
+and the gate, and signing can be layered on later without changing the schema.
+
 ### Run history
 
 ```bash

@@ -189,6 +189,7 @@ def _emit_scout_hook_event(
     rendered_paths: list[str],
     wall_seconds: float,
     estimated_dollars: float,
+    receipt: dict | None = None,
 ) -> str | None:
     hook = _scout_hook_config(config)
     if not hook or not _should_emit_scout_hook(
@@ -220,6 +221,7 @@ def _emit_scout_hook_event(
         "error": error_text,
         "wall_seconds": wall_seconds,
         "estimated_dollars": estimated_dollars,
+        "receipt": receipt,
         "channel": hook.get("channel", "teams_dm"),
         "created_at": int(time.time()),
     }
@@ -260,6 +262,8 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
     error_text: str | None = None
     review_id: int | None = None
     discovered_tasks: list = []
+    umpire_report = None  # kept for building the run receipt after grading
+    run_env: Envelope | None = None
 
     # Cross-run spend budget gate. The `runs` table is the spend ledger; aggregate
     # prior spend over the configured windows and either (a) skip this run when a
@@ -377,6 +381,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             write_profile=config.write_profile,
             require_srt_for_bash=config.require_srt_for_bash,
         )
+        run_env = env
         if config.runs and config.runs > 1:
             # Best-of-K, headless: fan out K runs, never block on close calls.
             from boundary.clients import make_client
@@ -457,6 +462,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
                     report = ThirdUmpire.grade(transcript_path)
                     third_umpire_verdict = report.verdict
                     third_umpire_summary = report.summary
+                    umpire_report = report
                 except Exception as e:
                     third_umpire_verdict = "ERROR"
                     third_umpire_summary = {"error": str(e)}
@@ -478,6 +484,25 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         transcript_path=transcript_path, written_files=written_files,
         error=error_text, attribution=_attribution,
     )
+
+    # Run receipt (boundary.receipt/v1): bind the policy that ran to its verdict.
+    # Best-effort — a receipt failure must never crash an otherwise-good run.
+    receipt_dict: dict | None = None
+    if umpire_report is not None and run_env is not None:
+        try:
+            from boundary.receipt import Receipt
+            receipt_dict = Receipt.build(
+                umpire_report, spec=run_env.spec_dict(), spec_hash=run_env.spec_hash(),
+                run_id=run_id, schedule_name=config.name,
+                model=third_umpire_summary.get("model") if third_umpire_summary else None,
+                estimated_dollars=estimated_dollars, transcript_path=transcript_path,
+            ).as_dict()
+            history.set_receipt(run_id, receipt_dict)
+            if transcript_path:
+                Path(transcript_path).with_suffix(".receipt.json").write_text(
+                    json.dumps(receipt_dict, indent=2, default=str), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - receipt is an add-on, not the run
+            receipt_dict = None
 
     if stop_reason == "ambiguity_halt" and config.on_ambiguity == "queue" and transcript_path:
         q, opts = _last_question_from_transcript(Path(transcript_path))
@@ -523,6 +548,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
         rendered_paths=config.rendered_writable_paths(),
         wall_seconds=wall_seconds,
         estimated_dollars=estimated_dollars,
+        receipt=receipt_dict,
     )
     _release_lock(lock_path)
     return {

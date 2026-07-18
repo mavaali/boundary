@@ -146,6 +146,18 @@ def _match_segments(pat: list[str], path: list[str]) -> bool:
 ENVELOPE_SPEC_VERSION = 1
 
 
+def canonical_spec_hash(spec: dict) -> str:
+    """Canonical sha256 of a spec_dict()-shaped policy document.
+
+    Shared by Envelope.spec_hash() and receipt verification so an arbitrary
+    stored spec re-hashes identically to the one the run recorded. Canonical =
+    sorted keys, tight separators, so key order / whitespace never move it.
+    """
+    import hashlib
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class Envelope:
     writable_paths: list[str] = field(default_factory=list)
@@ -375,9 +387,7 @@ class Envelope:
 
     def spec_hash(self) -> str:
         """Canonical sha256 of spec_dict() — stable across processes and runs."""
-        import hashlib
-        canonical = json.dumps(self.spec_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return canonical_spec_hash(self.spec_dict())
 
 
 @dataclass
@@ -1021,6 +1031,10 @@ class EnvelopeRunner:
                 require_staging=self.envelope.require_staging,
                 max_unstaged_reads=self.envelope.max_unstaged_reads,
                 write_profile=self.envelope.write_profile,
+                # Full policy document + its hash, so a run receipt can be
+                # reconstructed from the transcript and cross-checked.
+                spec=self.envelope.spec_dict(),
+                spec_hash=self.envelope.spec_hash(),
                 task=task,
             )
 
