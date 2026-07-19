@@ -199,6 +199,20 @@ def main(argv: list[str] | None = None) -> int:
         help="run adversarial fixtures asserting the envelope's guarantees (exit non-zero on regression)",
     )
 
+    rc = sub.add_parser(
+        "receipt",
+        help="show or verify a run receipt (boundary.receipt/v1) — the policy a run "
+             "ran under, bound to its Third Umpire verdict",
+    )
+    rc_sub = rc.add_subparsers(dest="receipt_cmd", required=True)
+    rc_show = rc_sub.add_parser("show", help="print a run's receipt as JSON")
+    rc_show.add_argument("run_id", type=int)
+    rc_show.add_argument("--db", default=None, help="history DB path (default ~/.boundary/history.db)")
+    rc_verify = rc_sub.add_parser(
+        "verify", help="re-hash the receipt's policy and re-grade its transcript; exit non-zero on mismatch")
+    rc_verify.add_argument("run_id", type=int)
+    rc_verify.add_argument("--db", default=None, help="history DB path (default ~/.boundary/history.db)")
+
     overlays = sub.add_parser("overlays", help="list/show available overlays")
     overlays_sub = overlays.add_subparsers(dest="overlays_cmd", required=True)
     overlays_sub.add_parser("list", help="list installed overlays")
@@ -791,6 +805,29 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(store.render())
         return 0
+
+    if args.cmd == "receipt":
+        import json as _json
+
+        from boundary.history import History
+        from boundary.receipt import Receipt, verify_receipt
+        h = History(args.db) if args.db else History()
+        try:
+            stored = h.get_receipt(args.run_id)
+        finally:
+            h.close()
+        if stored is None:
+            print(f"[receipt] no receipt recorded for run {args.run_id}")
+            return 2
+        if args.receipt_cmd == "show":
+            print(_json.dumps(stored, indent=2, default=str))
+            return 0
+        # verify
+        res = verify_receipt(Receipt.from_dict(stored))
+        status = "OK" if res.ok else "FAILED"
+        print(f"[receipt] run {args.run_id}: {status}")
+        print(f"  {res.detail}")
+        return 0 if res.ok else 2
 
     if args.cmd == "selftest":
         from boundary.selftest import run_selftest

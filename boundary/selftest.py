@@ -373,6 +373,47 @@ def check_taint_flow() -> SelftestResult:
     )
 
 
+def check_receipt_verifies() -> SelftestResult:
+    """A receipt built from a real run must verify, and a tampered one must not
+    — the receipt binds the policy to the verdict, and verify catches drift."""
+    name = "receipt_verifies"
+    import json as _json
+
+    from boundary.receipt import Receipt, verify_receipt
+    from boundary.third_umpire import ThirdUmpire
+
+    with tempfile.TemporaryDirectory() as d:
+        env = Envelope(writable_paths=["out.md"], max_writes=3)
+        env.require_staging = False
+        events = [
+            {"type": "envelope_start", "writable_paths": env.writable_paths,
+             "require_staging": False, "spec": env.spec_dict(),
+             "spec_hash": env.spec_hash(), "task": "t"},
+            {"type": "envelope_end", "writes_executed": 1, "min_writes": env.min_writes,
+             "on_commit": env.on_commit, "on_taint": env.on_taint,
+             "model": "claude-haiku-4.5", "estimated_dollars": 0.01, "events": []},
+            {"type": "end", "iterations": 2},
+        ]
+        tp = Path(d) / "t.jsonl"
+        tp.write_text("\n".join(_json.dumps(e) for e in events), encoding="utf-8")
+        report = ThirdUmpire.grade(tp)
+        receipt = Receipt.build(report, spec=env.spec_dict(), spec_hash=env.spec_hash(),
+                                transcript_path=str(tp), created_at=1)
+
+        intact = verify_receipt(receipt)
+        tampered = Receipt.from_dict(receipt.as_dict())
+        tampered.spec["writable_paths"] = ["**"]  # widen policy, keep the hash
+        caught = verify_receipt(tampered)
+
+    passed = intact.ok and not caught.ok and not caught.spec_hash_ok
+    return SelftestResult(
+        name, passed=passed,
+        detail="intact receipt verifies; a widened-policy forgery is caught"
+        if passed
+        else f"receipt verify wrong: intact_ok={intact.ok} forgery_caught={not caught.ok}",
+    )
+
+
 # Order: enforced guarantees first, then gated (expected_fail) ones.
 CHECKS = [
     check_write_outside_allowlist,
@@ -383,6 +424,7 @@ CHECKS = [
     check_egress_blocked_empty_allowlist,
     check_denylist_bypass_blocked,
     check_taint_flow,
+    check_receipt_verifies,
 ]
 
 
