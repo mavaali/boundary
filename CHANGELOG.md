@@ -9,6 +9,22 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **Typed `gh` commit tools** (`boundary/tools/gh.py`) — `gh_pr_create` and
+  `gh_issue_comment`, `kind="commit"` and governed by the existing `on_commit`
+  policy (refuse / queue / ask / allow + `commit_allowlist`). This implements the
+  prescription the denylist comment has carried since 0.1: *"if an agent shells
+  out to `gh` repeatedly, the answer is a typed gh_* commit tool, NOT a longer
+  denylist."* `gh` stays on the denylist — raw `gh` via bash is still refused;
+  these are the sanctioned path. Off by default: opt in with `enable_gh: true`
+  in a schedule YAML (or `Agent(enable_gh=True)`), which only *registers* them —
+  `on_commit` still decides whether they can execute. Arguments are shell-quoted
+  via `shlex.join`, so bodies containing shell metacharacters are data, not
+  injection. **A created PR carries its own receipt**: `gh_pr_create` appends a
+  `boundary.receipt/v1` policy attestation (the run's `spec_hash` + `spec`,
+  `verdict: null` since grading happens post-run) to the PR body, so an
+  agent-authored PR names the exact envelope that produced it and points at
+  `boundary receipt verify <run-id>` for the graded receipt. Hard cap of 3 typed
+  gh verbs, documented in the module — past it the answer is an MCP gateway.
 - **Run receipts (`boundary.receipt/v1`)** — a portable artifact binding the two
   things Boundary already produced separately: the policy
   (`Envelope.spec_dict()` + `spec_hash()`) and the grade

@@ -639,6 +639,42 @@ Validation errors block install:
 - `commit_allowlist` set but `on_commit != allow` (would be ignored)
 - `on_commit` not in {refuse, queue, allow}
 
+### Typed `gh` tools — the sanctioned path for GitHub actions
+
+`gh` is on the bash denylist, so raw `gh` through `bash` is refused as
+commit-class. The answer is **not** a longer denylist — it's a typed commit tool.
+Two ship today (`boundary/tools/gh.py`):
+
+| Tool | Action |
+|---|---|
+| `gh_pr_create` | Open a pull request (`title`, `body`, optional `base`, `draft`) |
+| `gh_issue_comment` | Comment on an issue or PR (`issue`, `body`) |
+
+They're **off by default**. Opt in per schedule with `enable_gh: true` (or
+`Agent(enable_gh=True)`) — and note that opting in only *registers* them. They
+are still governed by `on_commit`, so a run must also set `on_commit: allow` plus
+a `commit_allowlist` to actually use them:
+
+```yaml
+enable_gh: true
+on_commit: allow
+commit_allowlist:
+  - gh_pr_create
+```
+
+Arguments are shell-quoted (`shlex.join`), so a body containing `;` or backticks
+is passed as data, not interpolated into the command.
+
+**PRs carry their receipt.** `gh_pr_create` appends a `boundary.receipt/v1`
+policy attestation to the PR body: the `spec_hash` and full `spec` of the
+envelope governing the run, with `verdict: null` — the run isn't graded until it
+ends. A reviewer reads the PR and sees exactly which policy produced it, then
+runs `boundary receipt verify <run-id>` for the graded receipt.
+
+> **Verb cap: 3.** `gh` has a huge surface and "just one more verb" is the slope.
+> Past the cap the answer is an MCP gateway, not more tools here — the same
+> discipline as the denylist's 12-entry cap.
+
 ### The bash loophole: the egress proxy is the boundary, the denylist is a nudge
 
 Bash can sidestep typed commit tools for external side effects: `curl -X POST`, `gh issue create`, `python -c "urllib..."`. There are two layers here with **deliberately different jobs** — and only one of them is a security boundary.

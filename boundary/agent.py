@@ -7,6 +7,7 @@ from boundary.clients.base import Message, ModelClient
 from boundary.loop import LoopResult, run_loop
 from boundary.tools.clawpilot import register_clawpilot_tools
 from boundary.tools.fs import register_fs_tools
+from boundary.tools.gh import register_gh_tools
 from boundary.tools.registry import ToolRegistry
 from boundary.tools.sandbox import resolve_auto_driver, warn_once
 from boundary.tools.shell import register_shell_tools
@@ -27,6 +28,7 @@ class Agent:
         enable_shell: bool = True,
         enable_web: bool = False,
         enable_clawpilot: bool = False,
+        enable_gh: bool = False,
         shell_timeout: int = 60,
         sandbox_driver: str = "auto",
         egress_allowlist: list[str] | None = None,
@@ -78,6 +80,16 @@ class Agent:
             )
         if enable_clawpilot:
             register_clawpilot_tools(self.tools, workspace_root=self.workspace.root)
+        # Live envelope policy for the gh receipt attestation. Late-bound: the
+        # envelope does not exist at Agent construction (it wraps the agent), so
+        # EnvelopeRunner sets this at run start and the tool reads it per call.
+        self.gh_policy: dict | None = None
+        if enable_gh:
+            register_gh_tools(
+                self.tools, self.workspace, timeout=shell_timeout,
+                driver=sandbox_driver, egress_allowlist=egress_allowlist,
+                policy_provider=lambda: self.gh_policy,
+            )
         self.max_iters = max_iters
         if transcript is True:
             self.transcript: Transcript | None = Transcript(agent_name=name)
