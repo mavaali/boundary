@@ -53,7 +53,10 @@ from boundary.tools.registry import Tool, ToolRegistry
 #     typed `kind="commit"` tool instead. That's why bash_commit exists.
 #   - The Third Umpire surfaces every bash_commit / commit-tool call in its verdict. If an
 #     agent shells out to `gh` repeatedly, the answer is a typed gh_* commit
-#     tool, NOT a longer denylist.
+#     tool, NOT a longer denylist. That prescription is now implemented:
+#     `boundary/tools/gh.py` (gh_pr_create / gh_issue_comment, opt-in via
+#     enable_gh, governed by on_commit). `gh` stays on this denylist — raw
+#     `gh` through bash is still refused; the typed tools are the sanctioned path.
 # -----------------------------------------------------------------------------
 BASH_COMMIT_DENYLIST: tuple[str, ...] = (
     "curl", "wget", "gh", "az", "mail", "sendmail", "osascript", "git",
@@ -1019,6 +1022,14 @@ class EnvelopeRunner:
             Message(role="system", content=system),
             Message(role="user", content=task),
         ]
+        # Bind the live policy for the gh receipt attestation (no-op unless the
+        # agent registered gh tools). The envelope wraps the agent, so this is
+        # the first point where the governing policy is known.
+        if hasattr(self.agent, "gh_policy"):
+            self.agent.gh_policy = {
+                "spec_hash": self.envelope.spec_hash(),
+                "spec": self.envelope.spec_dict(),
+            }
         if self.agent.transcript:
             self.agent.transcript.log("envelope_start",
                 writable_paths=self.envelope.writable_paths,

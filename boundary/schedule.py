@@ -57,6 +57,10 @@ class ScheduleConfig:
     deny_read_secrets: bool = False
     # Strict egress (F7): refuse bash unless the driver is srt (egress-bounded).
     require_srt_for_bash: bool = False
+    # Typed gh commit tools (gh_pr_create / gh_issue_comment). Off by default:
+    # opting in only REGISTERS them — they are still governed by on_commit, so a
+    # run must also set on_commit: allow + commit_allowlist to actually use them.
+    enable_gh: bool = False
     client: str = "copilot"
     model: str | None = None
     notify: Any = "digest_daily"        # informational, or a notify config block
@@ -119,6 +123,7 @@ class ScheduleConfig:
             deny_read=list(data.get("deny_read", []) or []),
             deny_read_secrets=bool(data.get("deny_read_secrets", False)),
             require_srt_for_bash=bool(env.get("require_srt_for_bash", False)),
+            enable_gh=bool(data.get("enable_gh", False)),
             commit_allowlist=list(data.get("commit_allowlist", []) or []),
             client=data.get("client", "copilot"),
             model=data.get("model"),

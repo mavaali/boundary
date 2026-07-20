@@ -353,6 +353,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
             sandbox_driver=config.sandbox_driver,
             egress_allowlist=config.egress_allowlist,
             deny_read=config.effective_deny_read(),
+            enable_gh=config.enable_gh,
         )
         # Stamp charter hash into the transcript header for post-hoc grouping
         if agent.transcript:
@@ -396,6 +397,7 @@ def run_headless(config: ScheduleConfig, *, db_path: str | Path | None = None,
                     extra_system=extra_system, sandbox_driver=config.sandbox_driver,
                     egress_allowlist=config.egress_allowlist,
                     deny_read=config.effective_deny_read(),
+                    enable_gh=config.enable_gh,
                 )
                 if a.transcript:
                     a.transcript.close()
