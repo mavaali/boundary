@@ -1051,6 +1051,16 @@ Two fixes:
 
 Agent didn't write. Either bumped into ambiguity (check transcript for `ask_human`), the task was too narrow to need output, or `max_iters` was too small for the read-budget the task needed. Raise `min_writes` and the budget-pressure system will nudge harder.
 
+### Third Umpire says `WARN: thrashing`
+
+At least half the run's tool calls returned something other than `success`. The check names the mix — read it before touching anything, because the fix differs by dominant class:
+
+- **`policy-refused` heavy** — the envelope is mis-specified. The agent kept trying legitimate work the policy wouldn't allow. Widen `writable_paths`, raise a cap, or reconsider `require_staging`.
+- **`arg-invalid` heavy** — the tool contract is unclear. The agent kept malforming calls. Tighten tool descriptions or the system prompt.
+- **`runtime-error` heavy** — the environment is broken. Missing binary, bad path, network down.
+
+It's a `warn`, not a `fail`: the run may still have produced a correct artifact. This is distinct from the no-progress halt, which fires only when the *same* call repeats verbatim — an agent failing many different ways trips this check but not that one. Runs under 5 classified tool results are not judged, and transcripts predating typed feedback emit no check at all.
+
 ### Token usage shows 0
 
 Old transcript pre-instrumentation, or the provider didn't return `usage`. Together is the most likely culprit — recent versions are fine. If it persists, check `clients/together.py`.

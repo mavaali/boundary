@@ -113,8 +113,8 @@ agent's prose. The verdict is a stable, versioned, machine-readable document —
   if any `warn` check did not pass; else `PASS`.
 - `checks[].name` values are stable identifiers (e.g. `writes_inside_allowlist`,
   `produced_output`, `spend_pacing`, `egress_uncontained`, `taint_flow`,
-  `taint_egress`, `budget_halt`, `cache_utilization`). New checks MAY be added
-  within `v1`; removing or repurposing a name requires a version bump.
+  `taint_egress`, `budget_halt`, `cache_utilization`, `thrashing`). New checks MAY
+  be added within `v1`; removing or repurposing a name requires a version bump.
 - Produced by `boundary third-umpire <transcript> --format json`.
 - A conforming implementation MAY emit additional summary keys; consumers MUST
   ignore unknown keys (forward-compatibility within `v1`).
