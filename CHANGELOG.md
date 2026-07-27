@@ -9,6 +9,28 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **Third Umpire `thrashing` check** — typed feedback (feature A) has labelled
+  every tool result `success | arg-invalid | policy-refused | runtime-error`
+  since it shipped, but nothing graded the mix. A run could clear every hard gate
+  and still be mostly noise: burn twelve of sixteen calls on malformed or refused
+  actions, land its one write, and grade PASS. The check WARNs when the
+  unproductive share of a run's classified tool results reaches 50% over at least
+  5 results, and names the dominant failure class so the operator knows what to
+  fix — policy-refused heavy means the envelope is mis-specified, arg-invalid
+  heavy means the tool contract is unclear, runtime-error heavy means the
+  environment is broken. Ratio, not count, so long healthy runs aren't punished
+  for scale. Complements the in-band no-progress halt, which trips only on the
+  *same* call repeated verbatim — an agent failing twelve different ways never
+  trips that but is thrashing just as hard. Severity is `warn`, never `fail`: a
+  thrashing run may still have produced a correct artifact, and `fail` is
+  reserved for the envelope not holding. `summary` gains `results_by_class` and
+  `unproductive_ratio` (additive within `boundary.third-umpire/v1`).
+  Thresholds were calibrated against 95 real transcripts, not chosen by taste:
+  across the 49 carrying `result_class`, the unproductive ratio tops out at
+  0.273 (p95 = 0.231), so the 0.5 bar sits at 1.83x the observed healthy
+  ceiling and fires on zero of them. Transcripts predating typed feedback emit
+  no check at all rather than a passing one — an unmeasured run must not read
+  as a clean one.
 - **Run receipts (`boundary.receipt/v1`)** — a portable artifact binding the two
   things Boundary already produced separately: the policy
   (`Envelope.spec_dict()` + `spec_hash()`) and the grade

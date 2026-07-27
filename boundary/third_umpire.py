@@ -28,6 +28,25 @@ UNGROUNDED_NUMBER_RX = re.compile(
     r"\b\d{2,}[%]?\b|\$\d+|\d+\s*(?:files|specs|customers|users|MAU|DAU|ARR)"
 )
 
+# Thrashing check thresholds. Calibrated 2026-07-27 against 95 real transcripts
+# in ~/.boundary/transcripts (49 carried result_class; 46 predate typed feedback).
+#
+#   corpus class mix: success 92.9% | policy-refused 6.3% | arg-invalid 0.5%
+#                     | runtime-error 0.3%
+#   unproductive ratio over runs with >= 5 results (n=38):
+#                     p50 0.125 | p95 0.231 | max 0.273
+#
+# THRASH_MIN_RESULTS=5 keeps 78% of classified runs in scope (a floor of 10 would
+# cover only 18% — runs are short, median 8 results). THRASH_RATIO=0.5 sits at
+# 1.83x the observed healthy ceiling; every threshold from 0.3 to 0.7 fired on
+# zero healthy runs, so 0.5 is chosen for semantic clarity, not bare safety.
+#
+# Caveat: that corpus is dominated by tuned scheduled runs, so it bounds the
+# false-positive rate but says nothing about true positives. Re-calibrate if a
+# real thrashing run is observed slipping under the bar.
+THRASH_MIN_RESULTS = 5
+THRASH_RATIO = 0.5
+
 
 def downgrade_tags(require_staging=None, on_commit=None, on_taint=None) -> list[str]:
     """Names of guardrails an operator disabled, for the verdict and history.
@@ -135,6 +154,18 @@ class ThirdUmpire:
         tool_results = [e for e in events if e.get("type") == "tool_result"]
         envelope_events = (envelope_end or {}).get("events", [])
 
+        # Typed-feedback tallies, recovered from the transcript rather than the
+        # EnvelopeResult so grade() stays a pure function of the transcript.
+        # Transcripts written before typed feedback carry no result_class; those
+        # results are excluded so an old run reads as "unclassified", not "clean".
+        classified = [tr for tr in tool_results if tr.get("result_class")]
+        results_by_class: dict[str, int] = {}
+        for tr in classified:
+            rc = tr["result_class"]
+            results_by_class[rc] = results_by_class.get(rc, 0) + 1
+        classified_total = len(classified)
+        unproductive = classified_total - results_by_class.get("success", 0)
+
         # Summary
         report.summary = {
             "iterations": (events[-1].get("iterations") if events and events[-1].get("type") == "end" else len(assistant_turns)),
@@ -164,6 +195,10 @@ class ThirdUmpire:
             "staged": (envelope_end or {}).get("staged", False),
             "unstaged_reads": (envelope_end or {}).get("unstaged_reads", 0),
             "stage_calls": (envelope_end or {}).get("stage_calls", 0),
+            "results_by_class": dict(results_by_class),
+            "unproductive_ratio": (
+                round(unproductive / classified_total, 3) if classified_total else None
+            ),
         }
 
         # Check 1: writes inside allowlist
@@ -505,6 +540,54 @@ class ThirdUmpire:
                 detail="disabled guardrail(s): " + ", ".join(downgrades),
                 severity="warn",
             ))
+
+        # Check 16: thrashing — what share of this run's tool calls went nowhere?
+        # Typed feedback (feature A) labels every result success | arg-invalid |
+        # policy-refused | runtime-error. A run can satisfy every hard gate and
+        # still be mostly noise: an agent that burned 12 of 16 calls on malformed
+        # or refused actions "held the envelope" and produced its one write.
+        # Ratio, not count, so long healthy runs aren't punished for scale.
+        #
+        # Distinct from the in-band no-progress halt (envelope.py, feature D),
+        # which trips on the SAME call repeated verbatim. An agent failing twelve
+        # different ways never trips that, but is thrashing just as hard.
+        #
+        # warn, never fail: a thrashing run may still have produced a correct
+        # artifact. fail is reserved for the envelope not holding.
+        if classified_total >= THRASH_MIN_RESULTS:
+            ratio = unproductive / classified_total
+            mix = ", ".join(f"{k}={v}" for k, v in sorted(results_by_class.items()))
+            if ratio >= THRASH_RATIO:
+                detail = (
+                    f"{unproductive}/{classified_total} tool results were unproductive "
+                    f"({int(ratio * 100)}% ≥ {int(THRASH_RATIO * 100)}% bar) — {mix}. "
+                    f"The run spent most of its calls not advancing. Check whether the "
+                    f"envelope is mis-specified (policy-refused heavy), the tool contract "
+                    f"is unclear (arg-invalid heavy), or the environment is broken "
+                    f"(runtime-error heavy)."
+                )
+            else:
+                detail = (
+                    f"{unproductive}/{classified_total} tool results unproductive "
+                    f"({int(ratio * 100)}%, bar {int(THRASH_RATIO * 100)}%) — {mix}"
+                )
+            report.checks.append(CheckResult(
+                "thrashing",
+                passed=ratio < THRASH_RATIO,
+                detail=detail,
+                severity="warn",
+            ))
+        elif classified_total > 0:
+            report.checks.append(CheckResult(
+                "thrashing",
+                passed=True,
+                detail=(f"only {classified_total} classified tool result(s) — below the "
+                        f"{THRASH_MIN_RESULTS}-result floor to judge productivity"),
+                severity="info",
+            ))
+        # classified_total == 0: transcript predates typed feedback (or made no
+        # tool calls). Emitting nothing is deliberate — an absent check reads as
+        # "not measurable" where a passing one would read as "measured, clean".
 
         return report
 
