@@ -343,3 +343,167 @@ reality; add an optional `denyRead` secret-path list for `srt`.
 but detection is not prevention. Every finding here is a case where a check
 should become a **block**: wire the P0/P1 fixes as pre-execution refusals in the
 tool layer and `_make_enforced_tool`, not as verdict-time observations.
+
+---
+
+# Delta audit — 2026-07-29
+
+**Scope:** the surface added *after* the 2026-07-02 audit's commit `7482d1e`,
+i.e. the MCP tool-inversion stack from PRs #47/#48 — `boundary/mcp_gateway.py`
+(gateway core, HTTP transport, bearer auth), `boundary/launcher.py` (`boundary
+launch` jailed-caller launcher), and the `mcp-serve`/`launch` CLI wiring. The
+engine core audited at `7482d1e` was **not** re-audited: the gateway reuses the
+exact `_make_enforced_tool` object, so its per-tool gates (path/glob
+containment, `writable_paths` matching, egress checks) cannot drift by
+construction.
+
+**Method:** manual source review fanned across three reviewers by surface, every
+candidate finding verified at the lead tier — two by runnable proof (F14, F16),
+the rest by source trace. `srt` is not installed in this environment, so the
+launcher's *runtime* jail behavior (denyWrite/denyRead/egress enforcement) is
+verified only against the settings-JSON shape, not against real `srt` — called
+out as F21 (testing gap).
+
+**Headline:** no finding reopens a **critical** guarantee from the first audit
+(read-jail, write-jail, egress, commit-refuse all hold on the MCP surface). The
+serious findings are (1) the launcher hiding secret *files* but not secret
+*environment variables*, and (2) a token-capture/impersonation race on the
+gateway port. Everything else is defense-in-depth, info-leak, or a
+long-lived-session weakening of the staging pivot.
+
+| ID | Severity | Status | Title | Guarantee eroded |
+|----|----------|--------|-------|------------------|
+| F13 | **High** | open | `boundary launch` passes the parent env unfiltered — secret env vars reach the jailed caller; only secret *files* are hidden | Read-jail (secrets) |
+| F14 | **Medium** | open | Port TOCTOU: `pick_free_port()` releases the port before the gateway binds → a co-resident process can impersonate the gateway, capture the token, and write the workspace unsandboxed | Involuntary containment |
+| F15 | **Medium** | open | Staging pivot fires once per gateway *process*, not per task — a long-lived session stages once, then every later task is exempt | Staging discipline |
+| F16 | **Medium** | open | Loopback egress allowlist is port-unscoped — the jailed caller can reach any local service, not just the gateway | Egress containment |
+| F17 | **Low** | open | Scratch dir holding the bearer token + srt settings is never cleaned up | Secret hygiene |
+| F18 | **Low** | open | `{MCP_TOKEN}` argv substitution puts the token in `ps`/`/proc/<pid>/cmdline` | Secret hygiene |
+| F19 | **Low** | open | Path-escape `PermissionError` leaks the absolute workspace root to the caller (proven) | Info leak |
+| F20 | **Low** | open | No warning when `mcp-serve --host` is widened off loopback (asymmetric with `--no-auth`) | Operator safety |
+| F21 | **Low** | open | Non-`http` ASGI scopes bypass the bearer gate (latent — upstream mcp routing blocks it today) | Auth (defense-in-depth) |
+| F22 | **Low** | open | `gateway_argv()` doesn't forward `--egress-allow`/`--deny-read`/`--sandbox-driver`/`--require-srt-for-bash` — the gateway's own `--shell` bash tool runs under `mcp-serve` defaults | Config drift |
+| F23 | **Low** | open | Gateway surface has no wall-clock / repeat-call / iteration halt (engine has all three) | Defense-in-depth |
+| F24 | **Info** | — | `boundary_status` discloses the absolute workspace path to the caller | Info leak |
+| F25 | **Info** | — | Third Umpire's ambiguity/claim-label checks read vacuously clean on gateway transcripts (no assistant turns to scan) | Grading fidelity |
+| F26 | **Info** | — | Launcher jail correctness is tested against settings *shape* only, never against real `srt` | Test coverage |
+
+**Correctly done (don't regress):** `caller_srt_settings()` resolves
+`workspace_root` with `.resolve()` before denying it (symlinked `--workspace`
+still denied); `default_deny_read()` protects the **real** HOME, not the
+repointed scratch HOME (`caller_env()` returns a fresh dict and never mutates
+`os.environ`, verified independently by two reviewers); the gateway host is
+hard-pinned to loopback in `gateway_argv()` and `launch` exposes no `--host`;
+the token reaches the gateway subprocess via env, never argv; `make_token()` is
+`secrets.token_urlsafe(32)` (~256 bits); bearer compare is `hmac.compare_digest`
+(constant-time), empty-token opt-out requires the explicit `--no-auth` flag and
+is not reachable via an empty env var; `--no-auth` and missing-`srt` both fail
+loud, never silently downgrade; both subprocess spawns use list-argv (no shell
+injection); the gateway's session counters (writes/appends/external/taint)
+persist across the whole session (no per-call reset) and taint only ever grows
+more conservative.
+
+## F13 — `boundary launch` passes the parent environment unfiltered (High)
+
+`boundary/launcher.py:126` — `caller_env()` does `env = dict(base)` (base =
+`os.environ` of the `launch` process) and overrides only `HOME`, temp/XDG, and
+`BOUNDARY_MCP_*`. Every other inherited variable passes through. The launcher's
+selling point is hiding on-disk secrets via `default_deny_read()`
+(`~/.aws`, `~/.ssh`, `~/.netrc`, …) — but that is a **file-path** denylist, and
+srt's `denyRead` cannot hide environment variables from a process it `exec`s.
+So `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, `DATABASE_URL`,
+etc. — exactly the credentials a dev/CI shell exports, and where most secrets
+actually live — are readable by the jailed (possibly prompt-injected) caller via
+`os.environ`, then exfiltratable over the intentionally-allowed egress or a
+scratch write. This is the same *class* of gap as the file denylist F13 closes,
+one channel over. **Fix:** switch `caller_env()` to an additive allowlist
+(PATH, locale, the repointed HOME/temp/XDG, `BOUNDARY_MCP_*`) and require
+operators to re-admit anything else, or at minimum strip credential-shaped names
+(`*_TOKEN`/`*_KEY`/`*_SECRET`/`AWS_*`/…) with a warning.
+
+## F14 — Port TOCTOU enables gateway impersonation + token capture (Medium)
+
+`boundary/launcher.py:48-53,186,191,56-64` — `pick_free_port()` binds a socket,
+**closes it**, and returns the bare port number; the gateway is `Popen`'d
+afterward and must cold-start a Python interpreter before it rebinds that port.
+`wait_ready()` only does a bare `socket.create_connection` — no token handshake,
+no identity check. In the window, a co-resident process (a second concurrent
+`launch`, or an adversary on a shared host) can bind `127.0.0.1:<port>` first;
+`wait_ready` accepts the impostor, the caller sends its `Authorization: Bearer
+<token>` to it, and the impostor — an ordinary **unsandboxed** process — can both
+capture the token and service write requests against the real workspace with no
+envelope at all, defeating involuntary containment for that run. Environment-
+dependent (needs a racing local process). **Fix:** pass the already-bound socket
+fd into the gateway (socket activation), or have the gateway bind `:0` and report
+the bound port back over a pipe, or make `wait_ready` an authenticated check.
+
+## F15 — Staging pivot is per-process, not per-task (Medium, proven)
+
+`boundary/mcp_gateway.py:94` creates `self._counters` once; `stage_proposal`
+(`envelope.py:879`) sets `counters["staged"]=1` permanently. `EnvelopeRunner`
+rebuilds fresh counters every `.run()` (`envelope.py:985`), so each engine task
+re-requires staging; the gateway session does not. **Proven:** after one
+`stage_proposal`, a simulated second task issued 2 unstaged reads
+(`max_unstaged_reads=1`) and a write with no re-stage — all allowed. A
+long-lived server pointed at an agent across many requests satisfies staging
+once, then every later request (including an injected one) skips the pivot.
+**Fix:** key staging state per logical task (a `begin_task`/reset tool or a
+caller-supplied task id), not per process.
+
+## F16 — Loopback egress allowlist is port-unscoped (Medium)
+
+`boundary/launcher.py:44,83` — `LOOPBACK_DOMAINS = ["localhost","127.0.0.1"]`
+goes into the caller's `allowedDomains` with no port. If srt matches on hostname
+(plausible for a proxy-style allowlist; unverifiable without srt here), the
+caller reaches **every** loopback service — other dev servers, admin UIs, other
+`launch` gateways, cloud-SDK OAuth callback listeners — a real pivot/exfil
+channel the write-jail doesn't touch. **Fix:** scope to `127.0.0.1:<gateway
+port>` if srt supports host:port entries; otherwise document the residual risk
+and consider a Unix-domain-socket transport.
+
+## F17–F24 (summary)
+
+- **F17** `launcher.py:224-229` — the `finally` only stops the gateway; the
+  `mkdtemp` scratch dir (holding `mcp.json` with the token and `srt-settings.json`
+  exposing the workspace + deny-read list) is never removed. `0700` perms and a
+  single-use token cap the damage; still unbounded on-disk secret accumulation.
+  **Fix:** `shutil.rmtree(scratch, ignore_errors=True)` in the `finally`.
+- **F18** `launcher.py:95-102,206` — `{MCP_TOKEN}` argv substitution lands the
+  token in `ps`/`/proc/<pid>/cmdline` (world-readable, unlike `/proc/*/environ`).
+  Redundant with `BOUNDARY_MCP_TOKEN` (env) and `{MCP_CONFIG}` (a `0700` file).
+  **Fix:** drop it or warn loudly when a caller template uses it.
+- **F19** `tools/workspace.py:21-26` → `mcp_gateway.py` exception handler —
+  `read_file("/etc/passwd")` returns `ERROR: PermissionError: path /etc/passwd
+  escapes workspace <ABS ROOT>`, leaking the absolute workspace root and username
+  (**proven**). **Fix:** catch `PermissionError` in the fs tools, return a
+  relative-only message.
+- **F20** `cli.py` (`mcp-serve`) — `--no-auth` warns loudly but widening `--host`
+  off loopback is silent. **Fix:** warn when `host not in (127.0.0.1, localhost,
+  ::1)`.
+- **F21** `mcp_gateway.py:317` — `BearerAuthASGI` gates only `scope["type"] ==
+  "http"`; other scopes fall through unauthenticated. Not exploitable today
+  (mcp mounts `/mcp` as an http-only `Route` + a DNS-rebind middleware), so it's
+  latent. **Fix (fail closed):** authenticate everything except `"lifespan"`.
+- **F22** `launcher.py:140-162` — `gateway_argv()` omits `--egress-allow`,
+  `--deny-read`, `--sandbox-driver`, `--require-srt-for-bash`, so with `--shell`
+  the gateway's own bash tool runs under `mcp-serve` defaults (empty egress is
+  fail-safe; the operator's flags silently don't apply). **Fix:** forward them.
+- **F23** `mcp_gateway.py` — the gateway surface has no wall-clock, no repeat-call
+  halt, no iteration cap (the engine has all three). By design for token spend
+  (the caller spends in its own process), but wall-clock is the gateway's own
+  time and could bound a runaway session. **Fix:** an optional session deadline +
+  repeat-call halt.
+- **F24** `mcp_gateway.py:160` — `boundary_status` returns the absolute workspace
+  path to the caller. Minor info leak.
+
+## Suggested remediation order
+
+1. **F13** (env allowlist) and **F17** (rmtree scratch) — cheap, and F13 is the
+   only High. Do first.
+2. **F19/F20/F21** — small, clearly-correct hardening (catch `PermissionError`,
+   host-widen warning, fail-closed scope gate).
+3. **F15** (per-task staging reset) and **F18/F22/F24** — need a small API/UX
+   decision or flag plumbing.
+4. **F14** (port TOCTOU) and **F16** (egress scoping) — the robust fixes touch
+   the launcher's process/transport model and, for F16, depend on srt's
+   host:port support; schedule with the first real `srt` integration test (F26).
