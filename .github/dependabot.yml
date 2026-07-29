@@ -1,0 +1,42 @@
+# Dependabot version-update config.
+#
+# Scope note: this file configures scheduled VERSION updates only. Security
+# updates are enabled separately at the repo level and run regardless of the
+# schedule below; the `groups` blocks here also apply to grouped security PRs.
+#
+# Kept quiet on purpose (same taming as daftari, 2026-07): major bumps are
+# ignored — each needs manual review anyway — leaving grouped minor+patch on
+# the shipping package plus grouped GitHub Actions. Security updates are
+# unaffected by any of this.
+
+version: 2
+
+updates:
+  # ---- pip: the boundary-envelope package (pyproject.toml) ----
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      pip-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ---- GitHub Actions used by the workflows ----
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - ci
+    groups:
+      actions:
+        patterns: ["*"]
