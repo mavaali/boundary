@@ -373,15 +373,15 @@ long-lived-session weakening of the staging pivot.
 
 | ID | Severity | Status | Title | Guarantee eroded |
 |----|----------|--------|-------|------------------|
-| F13 | **High** | open | `boundary launch` passes the parent env unfiltered — secret env vars reach the jailed caller; only secret *files* are hidden | Read-jail (secrets) |
+| F13 | **High** | ✅ fixed (#50) | `boundary launch` passes the parent env unfiltered — secret env vars reach the jailed caller; only secret *files* are hidden | Read-jail (secrets) |
 | F14 | **Medium** | open | Port TOCTOU: `pick_free_port()` releases the port before the gateway binds → a co-resident process can impersonate the gateway, capture the token, and write the workspace unsandboxed | Involuntary containment |
 | F15 | **Medium** | open | Staging pivot fires once per gateway *process*, not per task — a long-lived session stages once, then every later task is exempt | Staging discipline |
 | F16 | **Medium** | open | Loopback egress allowlist is port-unscoped — the jailed caller can reach any local service, not just the gateway | Egress containment |
-| F17 | **Low** | open | Scratch dir holding the bearer token + srt settings is never cleaned up | Secret hygiene |
+| F17 | **Low** | ✅ fixed (#50) | Scratch dir holding the bearer token + srt settings is never cleaned up | Secret hygiene |
 | F18 | **Low** | open | `{MCP_TOKEN}` argv substitution puts the token in `ps`/`/proc/<pid>/cmdline` | Secret hygiene |
-| F19 | **Low** | open | Path-escape `PermissionError` leaks the absolute workspace root to the caller (proven) | Info leak |
-| F20 | **Low** | open | No warning when `mcp-serve --host` is widened off loopback (asymmetric with `--no-auth`) | Operator safety |
-| F21 | **Low** | open | Non-`http` ASGI scopes bypass the bearer gate (latent — upstream mcp routing blocks it today) | Auth (defense-in-depth) |
+| F19 | **Low** | ✅ fixed (#50) | Path-escape `PermissionError` leaks the absolute workspace root to the caller (proven) | Info leak |
+| F20 | **Low** | ✅ fixed (#50) | No warning when `mcp-serve --host` is widened off loopback (asymmetric with `--no-auth`) | Operator safety |
+| F21 | **Low** | ✅ fixed (#50) | Non-`http` ASGI scopes bypass the bearer gate (latent — upstream mcp routing blocks it today) | Auth (defense-in-depth) |
 | F22 | **Low** | open | `gateway_argv()` doesn't forward `--egress-allow`/`--deny-read`/`--sandbox-driver`/`--require-srt-for-bash` — the gateway's own `--shell` bash tool runs under `mcp-serve` defaults | Config drift |
 | F23 | **Low** | open | Gateway surface has no wall-clock / repeat-call / iteration halt (engine has all three) | Defense-in-depth |
 | F24 | **Info** | — | `boundary_status` discloses the absolute workspace path to the caller | Info leak |
