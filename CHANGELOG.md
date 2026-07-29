@@ -9,6 +9,22 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **MCP gateway (`boundary mcp-serve`)** — the tool-inversion architecture from
+  `docs/codex-orchestration-plan.md`: serve the envelope-enforced tools over MCP
+  stdio so an external agent CLI (Codex, Claude Code) with its native exec/write
+  tools stripped can only act through Boundary. Every call goes through the SAME
+  `_make_enforced_tool` gate as engine runs — write allowlist + floor/ceiling,
+  staging pivot (`boundary_stage_proposal`), persisted taint ledger, commit
+  policy, fail-closed unknown-write refusal — so enforcement semantics cannot
+  drift from the engine's, and this mode recovers the two things the hook-based
+  Claude Code plugin documents as impossible in-session: live gating with taint
+  recording. Adds a `boundary_status` tool (live spec + counters + events) and
+  logs an engine-shaped transcript (`envelope_start` / `tool_result` with
+  `result_class` / `envelope_end`) so gateway sessions are gradeable. Spend is
+  explicitly NOT metered here — the caller's model spends tokens in the caller's
+  process; cap it there. The `Gateway` core is dependency-free; the stdio
+  transport needs the new optional extra: `pip install boundary-envelope[mcp]`
+  (SDK 2.x).
 - **Third Umpire `thrashing` check** — typed feedback (feature A) has labelled
   every tool result `success | arg-invalid | policy-refused | runtime-error`
   since it shipped, but nothing graded the mix. A run could clear every hard gate

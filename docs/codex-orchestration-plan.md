@@ -1,6 +1,7 @@
 # Codex orchestration plan — review and corrected architecture
 
-Status: reviewed 2026-07-29. This replaces the draft "AI Orchestration Execution
+Status: reviewed 2026-07-29. The Boundary MCP server described below now ships
+as `boundary mcp-serve` (see README "MCP gateway" and `boundary/mcp_gateway.py`). This replaces the draft "AI Orchestration Execution
 Plan for codex" with a version whose mechanisms actually exist. Verdict on the
 draft: the *shape* (inverted control, fixed budgets, Boundary as the execution
 layer) is right and is largely what this repo already implements; three of the
