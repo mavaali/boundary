@@ -23,7 +23,7 @@ class Workspace:
             resolved.relative_to(self.root)
         except ValueError as e:
             raise PermissionError(
-                f"path {resolved} escapes workspace {self.root}"
+                f"path {p!r} escapes the workspace"
             ) from e
         return resolved
 
@@ -81,7 +81,7 @@ class Workspace:
         resolves outside the workspace (e.g. through a planted symlink)."""
         if self.glob_escapes(pattern):
             raise PermissionError(
-                f"glob pattern {pattern!r} escapes workspace {self.root}"
+                f"glob pattern {pattern!r} escapes the workspace"
             )
         for p in self.root.glob(pattern):
             if p.is_file() and self.contains(p):
