@@ -61,6 +61,43 @@ where this server can't see them. Cap spend on the caller (e.g.
 `claude -p --max-budget-usd`, Console workspace limits); the envelope in this
 mode is the write/read/egress boundary, not the wallet.
 
+### Involuntary containment: `boundary launch`
+
+`mcp-serve` alone is a boundary by convention — it only binds if the caller was
+launched with its native tools stripped, and one wrong flag bypasses it.
+`boundary launch` makes the containment OS-enforced: it starts the gateway
+*outside* the sandbox on loopback HTTP (`--transport http`, fresh bearer token;
+a stdio child would inherit the caller's jail and lose its own write access),
+then runs the caller under srt with workspace writes **denied at the OS**,
+writes allowed only in a throwaway scratch HOME, secret paths hidden, and
+egress limited to the model API plus loopback:
+
+```bash
+boundary launch --workspace . --envelope-writable 'out/**' \
+  --egress-allow api.anthropic.com \
+  -- claude -p "write the report to out/report.md" \
+     --mcp-config '{MCP_CONFIG}' --strict-mcp-config \
+     --disallowedTools "Bash,Write,Edit" --allowedTools "mcp__boundary__*"
+```
+
+`{MCP_CONFIG}`, `{MCP_URL}`, `{MCP_TOKEN}`, `{WORKSPACE}` are substituted into
+the caller command (and exported as `BOUNDARY_MCP_*` env vars). The caller can
+then mutate the workspace only through the envelope — not because it was asked
+nicely, but because the OS refuses everything else. No srt ⇒ launch refuses
+(fail closed); `--allow-uncontained` is the loud, explicit downgrade.
+
+### Measuring the capability tax
+
+Frontier callers are trained on their native tools; forcing them through
+generic `boundary_*` tools may degrade them. Instead of guessing, measure:
+
+```bash
+python -m benchmarks.capability_tax        # same tasks, native vs gateway tools
+```
+
+reports per-task `{success, wall_seconds, cost_usd, turns}` for both modes and
+flags tax cases (native PASS → gateway FAIL). See `benchmarks/README.md`.
+
 ## Overlays
 
 Keep the core generic and put local skins in overlays:

@@ -9,6 +9,32 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 ## [Unreleased]
 
 ### Added
+- **Gateway HTTP transport** (`boundary mcp-serve --transport http`) — streamable
+  HTTP on loopback with shared-secret bearer auth (token via `BOUNDARY_MCP_TOKEN`
+  or auto-generated; constant-time compare; `--no-auth` is a loud opt-out).
+  Deliberately not the SDK's OAuth machinery: for a loopback gateway serving one
+  local caller, resource-metadata discovery is pure surface area. HTTP is what
+  makes involuntary containment possible at all — a stdio gateway is a child of
+  the caller and inherits any jail the caller runs under, losing the very write
+  access it is supposed to mediate.
+- **`boundary launch` — involuntary containment for the MCP gateway.** The
+  gateway alone is a boundary by convention (one caller flag away from bypass);
+  `launch` makes it OS-enforced. It starts the gateway outside the sandbox on
+  loopback HTTP, then runs the caller CLI under srt with workspace writes DENIED
+  at the OS, writes allowed only in a throwaway scratch HOME, built-in secret
+  paths hidden, and egress limited to the model API domains plus loopback.
+  Substitutes `{MCP_CONFIG}`/`{MCP_URL}`/`{MCP_TOKEN}`/`{WORKSPACE}` into the
+  caller command and exports `BOUNDARY_MCP_*` env vars. No srt ⇒ refuses to
+  launch (fail closed); `--allow-uncontained` is the loud, explicit downgrade
+  back to convention.
+- **Capability-tax benchmark (`benchmarks/capability_tax.py`)** — measures what
+  tool inversion costs instead of guessing: same caller, same task, native tools
+  vs gateway tools, scoring `{success, wall_seconds, cost_usd, turns}` per mode
+  with success detected from the workspace (never trusted from the model). The
+  scoring core is dependency-free and mock-tested against an in-process Gateway;
+  the real path drives `claude -p` over streamable HTTP
+  (`python -m benchmarks.capability_tax`). The report's load-bearing outputs are
+  the tax-case list (native PASS → gateway FAIL) and the cost multiplier.
 - **MCP gateway (`boundary mcp-serve`)** — the tool-inversion architecture from
   `docs/codex-orchestration-plan.md`: serve the envelope-enforced tools over MCP
   stdio so an external agent CLI (Codex, Claude Code) with its native exec/write

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -367,8 +368,59 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--deny-read", action="append", default=[])
     mcp.add_argument("--require-srt-for-bash", action="store_true")
     mcp.add_argument("--no-transcript", action="store_true")
+    mcp.add_argument("--transport", choices=["stdio", "http"], default="stdio",
+                     help="stdio (default) for a caller-spawned server; http for a "
+                          "server that outlives and sits OUTSIDE a jailed caller "
+                          "(what `boundary launch` uses)")
+    mcp.add_argument("--host", default="127.0.0.1",
+                     help="http bind address (default loopback; think hard before widening)")
+    mcp.add_argument("--port", type=int, default=8848)
+    mcp.add_argument("--no-auth", action="store_true",
+                     help="http only: disable the bearer token check (loud opt-out; "
+                          "anything that can reach the port can then write the workspace)")
+
+    launch_p = sub.add_parser(
+        "launch",
+        help="run an external agent CLI jailed against a live MCP gateway — "
+             "workspace writes denied at the OS, mutations only through the envelope",
+    )
+    launch_p.add_argument("--workspace", default=".")
+    launch_p.add_argument("--envelope-writable", action="append", default=[])
+    launch_p.add_argument("--envelope-max-writes", type=int, default=10)
+    launch_p.add_argument("--envelope-min-writes", type=int, default=1)
+    launch_p.add_argument("--envelope-max-appends", type=int, default=10)
+    launch_p.add_argument("--envelope-max-external", type=int, default=20)
+    launch_p.add_argument("--envelope-max-unstaged-reads", type=int, default=3)
+    launch_p.add_argument("--no-staging-gate", action="store_true")
+    launch_p.add_argument("--on-taint", choices=["refuse", "warn", "allow"], default="warn")
+    launch_p.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default="refuse")
+    launch_p.add_argument("--commit-allow", action="append", default=[])
+    launch_p.add_argument("--shell", action="store_true",
+                          help="serve sandboxed bash tools through the gateway too")
+    launch_p.add_argument("--egress-allow", action="append", default=[],
+                          help="domain the JAILED CALLER may reach (repeat; e.g. "
+                               "api.anthropic.com). Loopback is always allowed so the "
+                               "caller can reach the gateway.")
+    launch_p.add_argument("--deny-read", action="append", default=[],
+                          help="extra paths hidden from the jailed caller, on top of "
+                               "the built-in secret locations")
+    launch_p.add_argument("--port", type=int, default=0,
+                          help="gateway port (default: pick a free one)")
+    launch_p.add_argument("--allow-uncontained", action="store_true",
+                          help="run WITHOUT the srt jail (loud downgrade: containment "
+                               "becomes convention, one caller flag away from bypass)")
+    launch_p.add_argument("caller", nargs=argparse.REMAINDER,
+                          help="caller command after `--`; {MCP_URL}, {MCP_TOKEN}, "
+                               "{MCP_CONFIG}, {WORKSPACE} are substituted")
 
     args = p.parse_args(argv)
+
+    if args.cmd == "launch":
+        from boundary.launcher import launch
+        caller = list(args.caller)
+        if caller and caller[0] == "--":
+            caller = caller[1:]
+        return launch(args, caller)
 
     if args.cmd == "mcp-serve":
         import asyncio
@@ -404,7 +456,22 @@ def main(argv: list[str] | None = None) -> int:
             deny_read=args.deny_read,
             transcript=not args.no_transcript,
         )
-        asyncio.run(serve_stdio(gateway))
+        if args.transport == "http":
+            from boundary.mcp_gateway import make_token, serve_http
+            # Token via env (never argv — argv is world-readable in `ps`), or
+            # freshly generated and printed once to stderr for the operator.
+            token = "" if args.no_auth else os.environ.get("BOUNDARY_MCP_TOKEN", "")
+            if not token and not args.no_auth:
+                token = make_token()
+                print(f"[boundary] mcp-serve auth token (also settable via "
+                      f"BOUNDARY_MCP_TOKEN): {token}", file=sys.stderr, flush=True)
+            if args.no_auth:
+                print("[boundary] WARNING: --no-auth — anything that can reach "
+                      f"{args.host}:{args.port} can drive this workspace's tools.",
+                      file=sys.stderr, flush=True)
+            asyncio.run(serve_http(gateway, host=args.host, port=args.port, token=token))
+        else:
+            asyncio.run(serve_stdio(gateway))
         return 0
 
     if args.cmd == "fielding-coach":

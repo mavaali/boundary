@@ -231,18 +231,21 @@ class Gateway:
             self.transcript.close()
 
 
-async def serve_stdio(gateway: Gateway) -> None:
-    """Serve the gateway over MCP stdio. Requires the optional `mcp` package
-    (SDK 2.x — the lowlevel constructor-handler API)."""
+def _require_mcp():
     try:
-        import mcp.types as types
-        from mcp.server import Server
-        from mcp.server.stdio import stdio_server
+        import mcp.types as types  # noqa: F401
+        from mcp.server import Server  # noqa: F401
     except ImportError as e:
         raise SystemExit(
             "the MCP gateway needs the optional 'mcp' package: "
             "pip install 'boundary-envelope[mcp]'"
         ) from e
+
+
+def _build_server(gateway: Gateway):
+    """Lowlevel MCP Server (SDK 2.x constructor-handler API) over the gateway."""
+    import mcp.types as types
+    from mcp.server import Server
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:
         return types.ListToolsResult(tools=[
@@ -261,7 +264,7 @@ async def serve_stdio(gateway: Gateway) -> None:
             content=[types.TextContent(type="text", text=text)],
         )
 
-    server = Server(
+    return Server(
         SERVER_NAME,
         instructions=(
             "Boundary envelope gateway: file and shell tools jailed to one "
@@ -274,6 +277,14 @@ async def serve_stdio(gateway: Gateway) -> None:
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )
+
+
+async def serve_stdio(gateway: Gateway) -> None:
+    """Serve the gateway over MCP stdio. Requires the optional `mcp` package."""
+    _require_mcp()
+    from mcp.server.stdio import stdio_server
+
+    server = _build_server(gateway)
     async with stdio_server() as (read_stream, write_stream):
         try:
             await server.run(
@@ -281,3 +292,81 @@ async def serve_stdio(gateway: Gateway) -> None:
             )
         finally:
             gateway.close()
+
+
+def make_token() -> str:
+    """A fresh shared-secret bearer token for the HTTP transport."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+class BearerAuthASGI:
+    """Shared-secret bearer gate wrapped around the streamable-HTTP app.
+
+    Deliberately NOT the SDK's OAuth machinery: the gateway binds to loopback
+    for one local caller, where resource-metadata discovery and an issuer are
+    pure surface area. One constant-time token compare; anything else is 401.
+    An empty token means auth was explicitly disabled by the operator.
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and self.token:
+            import hmac
+            auth = ""
+            for k, v in scope.get("headers") or []:
+                if k == b"authorization":
+                    auth = v.decode("latin-1")
+                    break
+            expected = "Bearer " + self.token
+            if not hmac.compare_digest(auth, expected):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain"),
+                                (b"www-authenticate", b"Bearer")],
+                })
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await self.app(scope, receive, send)
+
+
+async def serve_http(
+    gateway: Gateway,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8848,
+    token: str = "",
+    ready_event=None,
+) -> None:
+    """Serve the gateway over streamable HTTP with shared-secret bearer auth.
+
+    This is the transport the jailed-caller launcher needs: the gateway runs
+    OUTSIDE the caller's OS sandbox (a stdio child would inherit the jail and
+    lose its own write access), reachable only through the network hole the
+    sandbox settings explicitly leave open. An empty `token` disables auth —
+    only sane on loopback, and the CLI makes that an explicit loud opt-in.
+    `ready_event` (an asyncio.Event) is set once the socket is accepting.
+    """
+    _require_mcp()
+    import uvicorn
+
+    server = _build_server(gateway)
+    app = BearerAuthASGI(server.streamable_http_app(stateless_http=True), token)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    uv = uvicorn.Server(config)
+    if ready_event is not None:
+        async def _signal_ready():
+            while not uv.started:
+                import anyio
+                await anyio.sleep(0.05)
+            ready_event.set()
+        import asyncio
+        asyncio.get_running_loop().create_task(_signal_ready())
+    try:
+        await uv.serve()
+    finally:
+        gateway.close()
