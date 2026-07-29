@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 scratch/
 dist/
+.worktrees/
+.jugalbandi/
+.claude/settings.local.json

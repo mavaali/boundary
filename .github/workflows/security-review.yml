@@ -1,0 +1,42 @@
+# Automatic security review on every PR.
+#
+# Claude analyzes the diff for injection, auth, path-traversal, and
+# data-exposure issues and comments findings on the PR. Particularly
+# relevant here: Boundary's envelope enforcement is itself a security
+# surface — write-allowlist bypass and path traversal out of the staging
+# pivot, spend-cap evasion, MCP gateway tool inversion, and egress
+# allowlist gaps are exactly the bug classes this repo exists to prevent.
+# Requires the ANTHROPIC_API_KEY repo secret — this action does not yet
+# support subscription OAuth tokens, so it stays on metered API billing
+# (one Sonnet 5 run per PR).
+
+name: Security Review
+
+# Runs once when the PR is opened or leaves draft — not on every push.
+# Findings can go stale on a heavily-reworked PR; re-run manually from the
+# Actions tab if the diff changes substantially after review.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  security-review:
+    # Skipped for Dependabot PRs: GitHub doesn't forward repo secrets to
+    # Dependabot-triggered runs, so ANTHROPIC_API_KEY would be empty and
+    # the job fails before doing anything useful.
+    if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Run security review
+        uses: anthropics/claude-code-security-review@main
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          comment-pr: true
+          claude-model: claude-sonnet-5

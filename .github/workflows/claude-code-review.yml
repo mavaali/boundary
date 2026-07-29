@@ -1,0 +1,60 @@
+# Automatic code review on every non-draft PR.
+#
+# Runs Claude Code against the diff and posts findings as PR comments, so
+# human review starts from a machine pass and concentrates on judgment
+# calls. Billed to the Claude subscription via the CLAUDE_CODE_OAUTH_TOKEN
+# repo secret (generate with `claude setup-token`; valid ~1 year).
+
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    # Skipped for Dependabot PRs: GitHub doesn't forward repo secrets to
+    # Dependabot-triggered runs, so CLAUDE_CODE_OAUTH_TOKEN would be empty
+    # (and the action would refuse the bot actor anyway). Version bumps
+    # don't need a Claude review.
+    if: ${{ !github.event.pull_request.draft && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Review PR
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Bot-applied suggestion commits and auto-merge pushes fire
+          # `synchronize` as github-actions[bot]; without this the action
+          # refuses the run and the check fails. Scoped to that one bot —
+          # not "*" — so arbitrary bots can't spend the subscription.
+          allowed_bots: "github-actions"
+          prompt: |
+            Review this pull request for correctness bugs first, then for
+            simplification and efficiency. Read GUIDE.md and
+            docs/boundary-contract-spec.md before judging: this repo has
+            hard invariants — the envelope is pre-declared policy enforced
+            at the tool layer (write allowlist, write floor and ceiling,
+            staging pivot, spend caps, ambiguity halt); spend fails closed
+            (an unpriced model is priced at the most expensive known rate,
+            so a dollar cap always binds); the Third Umpire grades a run
+            against the envelope spec, never against the agent's prose
+            quality; `boundary selftest` must fail on any guarantee
+            regression, so a new or weakened guarantee without selftest
+            coverage is a finding; security-relevant enforcement changes
+            need red-team tests under tests/redteam/; the core engine
+            stays generic — local skins belong in overlays; Python >= 3.10
+            compatibility. Flag any diff that violates one. Only report
+            findings you are confident in; post them as inline comments on
+            the relevant lines, and finish with a short summary comment.
+          claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'

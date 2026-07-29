@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest *)",
+      "Bash(pip install -e .)",
+      "Bash(boundary selftest)",
+      "Bash(boundary --help)"
+    ]
+  },
+  "enabledPlugins": {
+    "jugalbandi@jugalbandi-protocol": true
+  }
+}
