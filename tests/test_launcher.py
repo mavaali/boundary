@@ -33,7 +33,7 @@ def _args(**over):
         envelope_max_unstaged_reads=3, no_staging_gate=True, on_taint="warn",
         on_commit="refuse", commit_allow=[], shell=False,
         egress_allow=["api.anthropic.com"], deny_read=[], port=0,
-        allow_uncontained=False,
+        allow_uncontained=False, keep_env=[],
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -112,19 +112,33 @@ def test_launch_requires_a_caller(capsys):
 
 def test_launch_uncontained_runs_caller(monkeypatch, tmp_path, capsys):
     """--allow-uncontained: gateway comes up, placeholders substitute, the
-    caller runs unjailed with the env coordinates set, exit code propagates."""
+    caller runs unjailed with the env coordinates set, exit code propagates.
+    Also covers F13 (credential env stripped from the caller) and F17
+    (scratch dir removed once launch returns)."""
     pytest.importorskip("mcp")  # the gateway subprocess serves HTTP via the mcp SDK
     monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_should_not_leak")
     marker = tmp_path / "ran.json"
+    # Read the mcp config's own content (not just its path) while the caller
+    # runs — the scratch dir holding it is removed once launch() returns
+    # (F17), so the path itself is no longer readable by the time this test
+    # asserts on it.
     caller = [
         sys.executable, "-c",
-        "import json,os,sys; json.dump({'url': os.environ['BOUNDARY_MCP_URL'],"
-        " 'cfg': sys.argv[1]}, open(sys.argv[2], 'w'))",
+        "import json,os,sys; cfg = json.load(open(sys.argv[1]));"
+        " json.dump({'url': os.environ['BOUNDARY_MCP_URL'], 'cfg': cfg,"
+        " 'home': os.environ['HOME'],"
+        " 'github_token': os.environ.get('GITHUB_TOKEN')}, open(sys.argv[2], 'w'))",
         "{MCP_CONFIG}", str(marker),
     ]
     rc = launch(_args(workspace=str(tmp_path / "ws"), allow_uncontained=True), caller)
     assert rc == 0
     data = json.loads(marker.read_text())
     assert data["url"].startswith("http://127.0.0.1:")
-    assert json.loads(Path(data["cfg"]).read_text())["mcpServers"]["boundary"]["url"]
+    assert data["cfg"]["mcpServers"]["boundary"]["url"]
     assert "UNJAILED" in capsys.readouterr().err
+    # F13: the caller must not see the parent's credential-shaped env vars.
+    assert not data["github_token"]
+    # F17: the scratch dir (held mcp.json with the bearer token) must be
+    # removed once launch() returns, not leaked on disk.
+    assert not Path(data["home"]).exists()

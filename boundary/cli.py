@@ -409,6 +409,10 @@ def main(argv: list[str] | None = None) -> int:
     launch_p.add_argument("--allow-uncontained", action="store_true",
                           help="run WITHOUT the srt jail (loud downgrade: containment "
                                "becomes convention, one caller flag away from bypass)")
+    launch_p.add_argument("--keep-env", action="append", default=[], metavar="NAME",
+                          help="env var name to pass through to the jailed caller despite "
+                               "the credential-shaped-name strip (repeat; e.g. ANTHROPIC_API_KEY "
+                               "so the caller can authenticate its own model)")
     launch_p.add_argument("caller", nargs=argparse.REMAINDER,
                           help="caller command after `--`; {MCP_URL}, {MCP_TOKEN}, "
                                "{MCP_CONFIG}, {WORKSPACE} are substituted")
@@ -468,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.no_auth:
                 print("[boundary] WARNING: --no-auth — anything that can reach "
                       f"{args.host}:{args.port} can drive this workspace's tools.",
+                      file=sys.stderr, flush=True)
+            if args.host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"[boundary] WARNING: --host {args.host} binds off loopback — "
+                      f"the bearer token travels in cleartext over plain HTTP and the "
+                      f"gateway is reachable beyond this host. Prefer 127.0.0.1.",
                       file=sys.stderr, flush=True)
             asyncio.run(serve_http(gateway, host=args.host, port=args.port, token=token))
         else:

@@ -83,6 +83,18 @@ def test_non_http_scopes_pass_through_untouched():
     assert inner.called is True
 
 
+def test_bearer_auth_rejects_websocket_without_token():
+    """F21: fail closed for scope types other than http/lifespan — a websocket
+    scope with no (or wrong) bearer token must be rejected, not fall through
+    unauthenticated."""
+    inner = _RecordingApp()
+    app = BearerAuthASGI(inner, "secret")
+    sent = _run_asgi(app, {"type": "websocket", "headers": []})
+    assert inner.called is False
+    assert sent[0]["type"] == "websocket.close"
+    assert sent[0]["code"] == 1008
+
+
 def test_make_token_is_long_and_unique():
     a, b = make_token(), make_token()
     assert a != b

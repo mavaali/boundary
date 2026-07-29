@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -43,6 +44,34 @@ from boundary.tools.sandbox import default_deny_read
 
 LOOPBACK_DOMAINS = ["localhost", "127.0.0.1"]
 READY_TIMEOUT_S = 15.0
+
+# Env var names matching these are stripped from the jailed caller's environment
+# (F13): they typically hold credentials, and srt's file denyRead cannot hide an
+# env var from a process it exec's. Operators re-admit specific ones the caller
+# needs (e.g. the caller's own model API key) via --keep-env.
+_CREDENTIAL_ENV_RE = re.compile(
+    r"(_TOKEN|_KEY|_SECRET|_PASSWORD|_PASSWD|_CREDENTIALS?|_SESSION|_AUTH)$"
+    r"|^(AWS_|GH_|GITHUB_|OPENAI_|ANTHROPIC_|GOOGLE_|GCP_|AZURE_|SLACK_|STRIPE_|"
+    r"NPM_|PYPI_|DOCKER_|KUBE_|DATABASE_URL|DB_)",
+    re.IGNORECASE,
+)
+
+
+def _is_credential_env(name: str) -> bool:
+    return bool(_CREDENTIAL_ENV_RE.search(name))
+
+
+def strip_credential_env(base: dict, keep: list[str] | None = None) -> tuple[dict, list[str]]:
+    """Return (filtered_env, stripped_names). Drops credential-shaped var names
+    unless in `keep`. Case-insensitive keep matching."""
+    keep_lower = {k.lower() for k in (keep or [])}
+    filtered, stripped = {}, []
+    for k, v in base.items():
+        if _is_credential_env(k) and k.lower() not in keep_lower:
+            stripped.append(k)
+        else:
+            filtered[k] = v
+    return filtered, sorted(stripped)
 
 
 def pick_free_port() -> int:
@@ -117,13 +146,16 @@ def write_mcp_config(path: Path, url: str, token: str) -> Path:
     return path
 
 
-def caller_env(base: dict, scratch: Path, mapping: dict[str, str]) -> dict:
+def caller_env(base: dict, scratch: Path, mapping: dict[str, str], keep_env: list[str] | None = None) -> dict:
     """Caller environment: HOME/temp repointed into the scratch dir (the only
     writable location), plus the gateway coordinates for callers that read env
-    instead of argv placeholders."""
+    instead of argv placeholders. Credential-shaped var names are stripped
+    first (F13) — see `strip_credential_env` — except any listed in
+    `keep_env`."""
     tmp = scratch / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
-    env = dict(base)
+    filtered, _stripped = strip_credential_env(base, keep_env)
+    env = dict(filtered)
     env.update({
         "HOME": str(scratch),
         "TMPDIR": str(tmp), "TEMP": str(tmp), "TMP": str(tmp),
@@ -204,7 +236,13 @@ def launch(args, caller: list[str]) -> int:
             "WORKSPACE": str(workspace_root),
         }
         caller_cmd = substitute(caller, mapping)
-        env = caller_env(os.environ, scratch, mapping)
+        env = caller_env(os.environ, scratch, mapping, keep_env=getattr(args, "keep_env", None))
+        _, stripped = strip_credential_env(os.environ, getattr(args, "keep_env", None))
+        if stripped:
+            print(f"[boundary launch] stripped {len(stripped)} credential-shaped env "
+                  f"var(s) from the jailed caller: {', '.join(stripped)}. If the caller "
+                  f"needs one (e.g. its model API key), re-admit it with --keep-env NAME.",
+                  file=sys.stderr)
 
         if srt:
             settings_path.write_text(json.dumps(caller_srt_settings(
@@ -227,3 +265,4 @@ def launch(args, caller: list[str]) -> int:
             gw.wait(timeout=5)
         except subprocess.TimeoutExpired:
             gw.kill()
+        shutil.rmtree(scratch, ignore_errors=True)

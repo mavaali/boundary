@@ -314,22 +314,28 @@ class BearerAuthASGI:
         self.token = token
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and self.token:
+        stype = scope["type"]
+        # lifespan is emitted by the ASGI server itself (startup/shutdown), never
+        # attacker-reachable — it must pass without a token. Everything else
+        # (http, websocket, or any future scope) is authenticated: fail closed.
+        if stype != "lifespan" and self.token:
             import hmac
             auth = ""
             for k, v in scope.get("headers") or []:
                 if k == b"authorization":
                     auth = v.decode("latin-1")
                     break
-            expected = "Bearer " + self.token
-            if not hmac.compare_digest(auth, expected):
-                await send({
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [(b"content-type", b"text/plain"),
-                                (b"www-authenticate", b"Bearer")],
-                })
-                await send({"type": "http.response.body", "body": b"unauthorized"})
+            if not hmac.compare_digest(auth, "Bearer " + self.token):
+                if stype == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await send({
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [(b"content-type", b"text/plain"),
+                                    (b"www-authenticate", b"Bearer")],
+                    })
+                    await send({"type": "http.response.body", "body": b"unauthorized"})
                 return
         await self.app(scope, receive, send)
 
