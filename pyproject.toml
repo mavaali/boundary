@@ -28,6 +28,11 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+# `boundary mcp-serve` — the stdio MCP gateway (boundary/mcp_gateway.py).
+# Written against the SDK 2.x lowlevel constructor-handler API.
+mcp = ["mcp>=2"]
+
 [project.urls]
 Homepage = "https://github.com/mavaali/boundary"
 Repository = "https://github.com/mavaali/boundary"

@@ -339,7 +339,73 @@ def main(argv: list[str] | None = None) -> int:
                      help="best-of-K headless close-call behavior: auto_pick_flag promotes the top pick "
                           "and files a non-blocking advisory; defer promotes nothing")
 
+    mcp = sub.add_parser(
+        "mcp-serve",
+        help="serve envelope-enforced tools over MCP stdio for an external agent CLI "
+             "(tool-inversion: the model proposes, Boundary executes)",
+    )
+    mcp.add_argument("--workspace", default=".")
+    mcp.add_argument("--envelope-writable", action="append", default=[],
+                     help="add a writable path/glob to the envelope (repeat for multiple)")
+    mcp.add_argument("--envelope-max-writes", type=int, default=10)
+    mcp.add_argument("--envelope-min-writes", type=int, default=1)
+    mcp.add_argument("--envelope-max-appends", type=int, default=10)
+    mcp.add_argument("--envelope-max-external", type=int, default=20)
+    mcp.add_argument("--envelope-max-unstaged-reads", type=int, default=3)
+    mcp.add_argument("--no-staging-gate", action="store_true",
+                     help="disable the stage_proposal pivot for this session")
+    mcp.add_argument("--on-taint", choices=["refuse", "warn", "allow"], default="warn")
+    mcp.add_argument("--on-commit", choices=["refuse", "queue", "ask", "allow"], default="refuse",
+                     help="commit-tool policy; 'queue'/'ask' have no human channel over MCP "
+                          "and behave like refuse-with-instructions")
+    mcp.add_argument("--commit-allow", action="append", default=[])
+    mcp.add_argument("--shell", action="store_true",
+                     help="also serve the sandboxed bash/bash_commit tools")
+    mcp.add_argument("--shell-timeout", type=int, default=60)
+    mcp.add_argument("--sandbox-driver", choices=["auto", "seatbelt", "srt", "none"], default="auto")
+    mcp.add_argument("--egress-allow", action="append", default=[])
+    mcp.add_argument("--deny-read", action="append", default=[])
+    mcp.add_argument("--require-srt-for-bash", action="store_true")
+    mcp.add_argument("--no-transcript", action="store_true")
+
     args = p.parse_args(argv)
+
+    if args.cmd == "mcp-serve":
+        import asyncio
+
+        from boundary.envelope import Envelope
+        from boundary.mcp_gateway import Gateway, serve_stdio
+        env = Envelope(
+            writable_paths=args.envelope_writable,
+            max_writes=args.envelope_max_writes,
+            min_writes=args.envelope_min_writes,
+            max_appends=args.envelope_max_appends,
+            max_external=args.envelope_max_external,
+            max_unstaged_reads=args.envelope_max_unstaged_reads,
+            require_staging=not args.no_staging_gate,
+            on_taint=args.on_taint,
+            on_commit=args.on_commit,
+            commit_allowlist=args.commit_allow,
+            require_srt_for_bash=args.require_srt_for_bash,
+            # Spend and wall-clock are the CALLER's budgets in gateway mode —
+            # the caller's model spends tokens in the caller's process, and the
+            # session lives as long as the client keeps it open.
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_dollars=None,
+            max_wall_seconds=None,
+        )
+        gateway = Gateway(
+            args.workspace, env,
+            enable_shell=args.shell,
+            shell_timeout=args.shell_timeout,
+            sandbox_driver=args.sandbox_driver,
+            egress_allowlist=args.egress_allow,
+            deny_read=args.deny_read,
+            transcript=not args.no_transcript,
+        )
+        asyncio.run(serve_stdio(gateway))
+        return 0
 
     if args.cmd == "fielding-coach":
         from boundary.fielding_coach import FieldingCoach, dispatch

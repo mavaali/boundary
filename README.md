@@ -23,8 +23,43 @@ guard structurally cannot see.
 - Fielding Coach: `boundary fielding-coach "loose prompt" --workspace <dir>`
 - Scheduled: `boundary schedule install <yaml>` (macOS launchd / Windows Task Scheduler)
 - Pipelines: `boundary pipeline-run <yaml>` for squad-planned multi-persona jobs
+- MCP gateway: `boundary mcp-serve` — serve the envelope-enforced tools to an
+  external agent CLI (Codex, Claude Code) over MCP
 
 Every envelope run can be reviewed by the **Third Umpire**: property checks against the envelope spec, not against the agent's prose quality.
+
+## MCP gateway (tool inversion)
+
+The inverse of running Boundary's own loop: strip an external agent CLI of its
+native exec/write tools and register Boundary as its only tool surface. The
+model proposes; Boundary executes — every call passes through the same
+envelope gate as engine runs (write allowlist + floor/ceiling, staging pivot,
+taint ledger, commit policy), and the session transcript is gradeable by the
+Third Umpire. See `docs/codex-orchestration-plan.md` for the architecture.
+
+```bash
+pip install 'boundary-envelope[mcp]'
+boundary mcp-serve --workspace . --envelope-writable 'out/**' --envelope-max-writes 5
+```
+
+Register it in Claude Code (`.mcp.json`) or Codex (`~/.codex/config.toml`) as a
+stdio server, then launch the caller with its own tools stripped, e.g.:
+
+```bash
+claude -p "..." --disallowedTools "Bash,Write,Edit" --allowedTools "mcp__boundary__*"
+```
+
+Served tools: `boundary_read_file`, `boundary_write_file`, `boundary_edit_file`,
+`boundary_append_file`, `boundary_list_dir`, `boundary_glob`, `boundary_grep`,
+`boundary_count_matches`, `boundary_stage_proposal`, plus `boundary_status`
+(live spec + counters + events). `--shell` adds sandboxed `boundary_bash` /
+`boundary_bash_commit` under the usual driver and commit-policy rules.
+
+One honest non-goal, mirroring the Claude Code plugin: token/dollar spend is
+NOT metered here — the caller's model spends tokens in the caller's process,
+where this server can't see them. Cap spend on the caller (e.g.
+`claude -p --max-budget-usd`, Console workspace limits); the envelope in this
+mode is the write/read/egress boundary, not the wallet.
 
 ## Overlays
 
