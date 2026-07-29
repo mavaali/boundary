@@ -70,3 +70,31 @@ full four-task suite is pending a key.
 
 Not AgentDojo-leaderboard-comparable — this is a Boundary-native measurement of
 the actual envelope, including the primitives AgentDojo doesn't exercise.
+
+## Capability-tax suite (`capability_tax.py`)
+
+The injection suite measures what the envelope *blocks*; this one measures what
+the MCP gateway *costs*. Same caller, same task, run twice: **native** (the
+caller's own tools, unguarded) vs **gateway** (native exec/write tools stripped,
+every mutation through a live envelope-enforced `boundary mcp-serve`). Scores
+`{success, wall_seconds, cost_usd, turns}` per mode; success is always detected
+from the workspace by the harness, never trusted from the model.
+
+**Mock (deterministic, no model, no `mcp` package):** the scoring core is
+driven by injected callables against an in-process `Gateway`:
+
+```bash
+pytest tests/test_capability_tax.py
+```
+
+**Real (produces the numbers):** drives `claude -p` headlessly in both modes —
+gateway mode via `--mcp-config` + `--strict-mcp-config` with native tools
+disallowed. Requires the `[mcp]` extra and an authenticated `claude` CLI:
+
+```bash
+python -m benchmarks.capability_tax --out benchmarks/capability_tax_results.md
+```
+
+The load-bearing number is the **tax case list** (native PASS → gateway FAIL)
+and the cost multiplier — they decide which task classes the tool-inversion
+architecture is usable for today.
