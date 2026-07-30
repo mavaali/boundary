@@ -186,3 +186,63 @@ class TestRunnerProxyLifecycle:
         runner.run("go")
         assert runner.agent.egress_allowlist == ["127.0.0.1", "localhost"]
         assert runner.agent.proxy_env == fake.proxy_env()
+
+
+class TestParseCredentialScopeArg:
+    def test_parses_single_endpoint(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        scope = parse_credential_scope_arg(
+            "service=github,host=api.github.com,key=env://GITHUB_TOKEN,"
+            "endpoint=GET:/repos/*/pulls"
+        )
+        assert scope.service == "github"
+        assert scope.host == "api.github.com"
+        assert scope.credential_key == "env://GITHUB_TOKEN"
+        assert scope.allow_endpoints == ["GET:/repos/*/pulls"]
+
+    def test_parses_repeated_endpoints(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        scope = parse_credential_scope_arg(
+            "service=github,host=api.github.com,key=env://GITHUB_TOKEN,"
+            "endpoint=GET:/repos/*/pulls,endpoint=GET:/repos/*/issues"
+        )
+        assert scope.allow_endpoints == ["GET:/repos/*/pulls", "GET:/repos/*/issues"]
+
+    def test_missing_endpoint_rejected(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        with pytest.raises(ValueError, match="allow_endpoints"):
+            parse_credential_scope_arg(
+                "service=github,host=api.github.com,key=env://GITHUB_TOKEN"
+            )
+
+    def test_missing_service_rejected(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        with pytest.raises(ValueError, match="service"):
+            parse_credential_scope_arg("host=api.github.com,key=env://X,endpoint=GET:/a")
+
+    def test_missing_host_rejected(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        with pytest.raises(ValueError, match="host"):
+            parse_credential_scope_arg("service=x,key=env://X,endpoint=GET:/a")
+
+    def test_unknown_key_rejected(self):
+        from boundary.cli import parse_credential_scope_arg
+
+        with pytest.raises(ValueError, match="unknown"):
+            parse_credential_scope_arg(
+                "service=x,host=h,key=env://X,endpoint=GET:/a,bogus=1"
+            )
+
+    def test_run_malformed_credential_scope_exits_2(self):
+        from boundary.cli import main
+
+        rc = main([
+            "run", "--task", "x", "--credential-scope", "bogus",
+            "--envelope-writable", "out.md",
+        ])
+        assert rc == 2
