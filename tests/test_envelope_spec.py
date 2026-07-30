@@ -8,8 +8,16 @@ hash of what the run was *allowed to do*.
 """
 from __future__ import annotations
 
+import shutil
+
+import pytest
+
 from boundary.credential_proxy import CredentialScope
-from boundary.envelope import Envelope
+from boundary.envelope import (
+    CredentialScopePreconditionError,
+    Envelope,
+    check_credential_scope_preconditions,
+)
 
 
 def test_spec_serializes_versioned_policy():
@@ -73,3 +81,32 @@ class TestCredentialScopesField:
         assert Envelope().spec_hash() != Envelope(
             credential_scopes=[self._scope()]
         ).spec_hash()
+
+
+_SCOPES = [
+    CredentialScope(
+        service="github",
+        host="api.github.com",
+        credential_key="env://GITHUB_TOKEN",
+        allow_endpoints=["GET:/repos/*/pulls"],
+    )
+]
+
+
+class TestCredentialScopePreconditions:
+    def test_no_scopes_no_check(self):
+        check_credential_scope_preconditions([], resolved_driver="none")
+
+    def test_refuses_when_nono_missing(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(CredentialScopePreconditionError, match="nono"):
+            check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")
+
+    def test_refuses_when_driver_not_srt(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/nono")
+        with pytest.raises(CredentialScopePreconditionError, match="srt"):
+            check_credential_scope_preconditions(_SCOPES, resolved_driver="seatbelt")
+
+    def test_passes_with_nono_and_srt(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/nono")
+        check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")

@@ -17,12 +17,45 @@ import fnmatch
 import json
 import posixpath
 import re
+import shutil
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
-from boundary.credential_proxy import CredentialScope
+from boundary.credential_proxy import (
+    CredentialScope,
+    start_credential_proxy,
+)
+
+
+class CredentialScopePreconditionError(RuntimeError):
+    """Fail-closed refusal: credential_scopes set but the enforcement stack
+    (nono + srt) is unavailable, so the credential could not be bounded."""
+
+
+def check_credential_scope_preconditions(
+    scopes: list[CredentialScope], *, resolved_driver: str
+) -> None:
+    """Refuse the run unless the credential-scoping enforcement stack is present.
+
+    A credential scope is only a real boundary when (a) nono is installed to run
+    the proxy and (b) the sandbox driver is srt, which OS-forces egress through
+    it. Anything else would silently hand the agent an unbounded credential.
+    """
+    if not scopes:
+        return
+    if shutil.which("nono") is None:
+        raise CredentialScopePreconditionError(
+            "credential_scopes set but nono is not installed; refusing to run "
+            "(fail closed). Install nono or remove credential_scopes."
+        )
+    if resolved_driver != "srt":
+        raise CredentialScopePreconditionError(
+            f"credential_scopes set but sandbox driver resolved to "
+            f"{resolved_driver!r}, not 'srt'; only srt OS-forces egress through "
+            "the credential proxy. Refusing to run (fail closed)."
+        )
 from boundary.loop import LoopResult
 from boundary.taint import TaintStore
 from boundary.tools.registry import Tool, ToolRegistry
@@ -1013,6 +1046,11 @@ class EnvelopeRunner:
         events: list[EnvelopeEvent] = []
         iter_ref = [0]
         enforced = self._enforced_registry(halt_flag, events, iter_ref, commit_halt_flag)
+        # Fail closed before any work if credential_scopes can't be enforced.
+        check_credential_scope_preconditions(
+            self.envelope.credential_scopes,
+            resolved_driver=self.agent.sandbox_driver,
+        )
         envelope_note = ENVELOPE_NOTE_TEMPLATE.format(
             writable_paths=self.envelope.writable_paths,
             max_writes=self.envelope.max_writes,
