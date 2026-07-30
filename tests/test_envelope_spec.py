@@ -8,6 +8,7 @@ hash of what the run was *allowed to do*.
 """
 from __future__ import annotations
 
+from boundary.credential_proxy import CredentialScope
 from boundary.envelope import Envelope
 
 
@@ -43,3 +44,32 @@ def test_spec_hash_ignores_pricing_changes():
     b = Envelope(writable_paths=["out.md"])
     b.token_rates = {"some-model": {"input": 1.0, "cached": 0.1, "output": 2.0}}
     assert a.spec_hash() == b.spec_hash()
+
+
+class TestCredentialScopesField:
+    def _scope(self):
+        return CredentialScope(
+            service="github",
+            host="api.github.com",
+            credential_key="env://GITHUB_TOKEN",
+            allow_endpoints=["GET:/repos/*/pulls"],
+        )
+
+    def test_default_is_empty_list(self):
+        assert Envelope().credential_scopes == []
+
+    def test_spec_dict_includes_credential_scopes(self):
+        spec = Envelope(credential_scopes=[self._scope()]).spec_dict()
+        assert spec["credential_scopes"] == [
+            {
+                "service": "github",
+                "host": "api.github.com",
+                "credential_key": "env://GITHUB_TOKEN",
+                "allow_endpoints": ["GET:/repos/*/pulls"],
+            }
+        ]
+
+    def test_spec_hash_changes_with_credential_scopes(self):
+        assert Envelope().spec_hash() != Envelope(
+            credential_scopes=[self._scope()]
+        ).spec_hash()

@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
+from boundary.credential_proxy import CredentialScope
 from boundary.loop import LoopResult
 from boundary.taint import TaintStore
 from boundary.tools.registry import Tool, ToolRegistry
@@ -232,6 +233,11 @@ class Envelope:
     # Per-tool allowlist. Only checked when on_commit == "allow". Empty list
     # under "allow" means ALL commit tools are allowed (use with caution).
     commit_allowlist: list[str] = field(default_factory=list)
+    # Credential-scoping leg. Each scope confines one credential the agent may
+    # wield to specific HTTP method+path patterns, enforced by a standalone nono
+    # proxy (see boundary.credential_proxy). Non-empty requires the srt driver +
+    # nono installed (fail-closed; enforced in EnvelopeRunner.run).
+    credential_scopes: list[CredentialScope] = field(default_factory=list)
     # Taint policy (Item 3). A run becomes "tainted" when it handles untrusted
     # content: a fetch_url (external), a read_file/grep of a file the persisted
     # ledger marks tainted, or a bash call when egress is not OS-bounded (driver
@@ -381,6 +387,7 @@ class Envelope:
             "max_wall_seconds": self.max_wall_seconds,
             "on_commit": self.on_commit,
             "commit_allowlist": list(self.commit_allowlist),
+            "credential_scopes": [s.as_spec_dict() for s in self.credential_scopes],
             "on_taint": self.on_taint,
             "write_profile": self.write_profile,
         }
