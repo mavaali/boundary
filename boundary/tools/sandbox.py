@@ -191,7 +191,10 @@ def _srt_settings(root: Path, egress_allowlist: list[str], deny_read: list[str])
     return {
         "network": {"allowedDomains": list(egress_allowlist), "deniedDomains": []},
         "filesystem": {
-            "allowRead": ["/"],
+            # No allowRead: srt allows reads everywhere by default and allowRead
+            # takes PRECEDENCE over denyRead, so allowRead:["/"] silently defeats
+            # the read denylist (the F6 remediation was a no-op on macOS). Omit
+            # it so denyRead actually binds. See #55 / F26.
             "allowWrite": [str(root)],
             "denyRead": list(deny_read),
             "denyWrite": [],

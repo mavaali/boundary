@@ -45,7 +45,9 @@ def test_caller_settings_invert_the_bash_jail(tmp_path):
     # workspace: readable but NOT writable — mutations must go through the gateway
     assert str(ws) in s["filesystem"]["denyWrite"]
     assert s["filesystem"]["allowWrite"] == [str(scratch)]
-    assert s["filesystem"]["allowRead"] == ["/"]
+    # No allowRead: allowRead takes precedence over denyRead in srt, so setting
+    # it to ["/"] would silently defeat the secret denylist (#55 / F26).
+    assert "allowRead" not in s["filesystem"]
     # secrets hidden: built-ins plus the caller's extras
     assert any(p.endswith(".ssh") for p in s["filesystem"]["denyRead"])
     assert "/opt/private" in s["filesystem"]["denyRead"]

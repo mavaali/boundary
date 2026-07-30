@@ -33,6 +33,10 @@ def test_default_deny_read_covers_common_secrets():
 def test_srt_settings_wires_deny_read():
     s = _srt_settings(Path("/tmp/ws"), ["example.com"], ["/home/u/.aws", "/etc/shadow"])
     assert s["filesystem"]["denyRead"] == ["/home/u/.aws", "/etc/shadow"]
+    # No allowRead: it takes precedence over denyRead in srt, so an allowRead:["/"]
+    # would re-allow the secrets the denylist just denied (#55 / F26). Omitting it
+    # is what makes the F6 read denylist actually bind.
+    assert "allowRead" not in s["filesystem"]
     # allowWrite is str(root); normalize since Windows renders '\tmp\ws'.
     assert s["filesystem"]["allowWrite"][0].replace("\\", "/") == "/tmp/ws"
 
