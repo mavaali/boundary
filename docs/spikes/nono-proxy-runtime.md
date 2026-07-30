@@ -75,6 +75,22 @@ Grading anchors for the Third Umpire `credential_scope_held` check:
 - Auth: session token via `Proxy-Authorization` (Basic `nono:<token>` as in the printed URL, or Bearer). Overridable via `--pass`/`NONO_PROXY_PASS`.
 - `--allow-endpoint` alias is annotated `remove_by="v1.0.0"` — watch for interface drift past nono 1.0.
 
+## Architecture pivot: nono-as-DRIVER (2026-07-30) — `[DATA]`
+
+The srt + standalone-`nono proxy` composition was abandoned: **srt runs its own egress MITM proxy and owns `HTTP(S)_PROXY`**, clobbering any injected nono-proxy URL, and `_jail_env`'s `os.environ.copy()` leaks the real credential into the srt jail. Both verified live.
+
+`nono run` solves it natively (verified live):
+- `GITHUB_TOKEN=<real> nono run --allow <ws> --allow-cwd -s --credential github --allow-endpoint "github:GET:/repos/*/pulls" -- env` → child's `GITHUB_TOKEN` is a **phantom** proxy token; the real secret is **absent** from the child env.
+- One invocation = fs write-jail (`--allow`, deny-by-default hides secrets) + egress (`--allow-domain`/`--block-net`) + credential scoping (`--credential`/`--allow-endpoint`, `compile_nono_flags` reused verbatim).
+- Headless: needs `--allow-cwd`; errors cleanly instead of prompting in non-interactive mode.
+- Out-of-scope L7 denials are **not** surfaced in `--log-file` or `--diagnostics-json` (fs/seatbelt denials only). So `credential_scope_held` grades on *enforcement presence* (declared + `credential_scopes_enforced`), not per-call attempts. Enforcement itself is hard/automatic (403).
+
+### Load-bearing probe result (`tests/test_credential_scope_e2e.py`) — `[DATA]`
+Under the live nono driver, all three pass:
+1. `test_real_credential_absent_inside_jail` — PASS (phantom holds; real secret never in child env)
+2. `test_out_of_scope_endpoint_refused_403` — PASS
+3. `test_external_host_sealed` — PASS
+
 ## Design deltas this spike forces (before Task 2)
 1. **Data model:** `CredentialScope` must carry the scope's **host/base-URL** (to emit `--allow-domain`). Reconsider `credential_key` to use nono's real scheme (`env://VAR` or keychain account), not `keyring://`.
 2. **compile_nono_flags (Task 3):** emit `--credential` + `--allow-endpoint` + **`--allow-domain "https://<host>/<path-glob>"`** per scope; run the proxy with `-vv --log-file`.
