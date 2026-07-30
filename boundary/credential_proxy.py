@@ -40,6 +40,14 @@ class CredentialScope:
                 f"credential scope for service {self.service!r} has empty host; "
                 "a host is required to emit the --allow-domain hard block"
             )
+        for endpoint in self.allow_endpoints:
+            method, _, path = endpoint.partition(":")
+            if not method or not path.startswith("/"):
+                raise ValueError(
+                    f"credential scope for service {self.service!r} has malformed "
+                    f"endpoint {endpoint!r}; expected 'METHOD:/path' "
+                    "(e.g. 'GET:/repos/*/pulls')"
+                )
 
     def as_spec_dict(self) -> dict:
         return {
@@ -57,3 +65,28 @@ class CredentialScope:
             credential_key=data["credential_key"],
             allow_endpoints=list(data.get("allow_endpoints", [])),
         )
+
+
+def compile_nono_flags(scopes: list[CredentialScope]) -> list[str]:
+    """Compile scopes into nono proxy CLI flags. Pure function.
+
+    Per scope, emits three flag families (see docs/spikes/nono-proxy-runtime.md):
+      --credential <service>                 credential injection route
+      --allow-endpoint <service>:METHOD:/p   confine which endpoints get the cred
+      --allow-domain https://<host>/p        hard block (403) outside the paths
+
+    --allow-domain is method-agnostic, so paths are de-duplicated across methods.
+    """
+    flags: list[str] = []
+    for scope in scopes:
+        flags.extend(["--credential", scope.service])
+        domains: list[str] = []
+        for endpoint in scope.allow_endpoints:
+            flags.extend(["--allow-endpoint", f"{scope.service}:{endpoint}"])
+            path = endpoint.partition(":")[2]
+            domain = f"https://{scope.host}{path}"
+            if domain not in domains:
+                domains.append(domain)
+        for domain in domains:
+            flags.extend(["--allow-domain", domain])
+    return flags
