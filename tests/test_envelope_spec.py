@@ -110,3 +110,79 @@ class TestCredentialScopePreconditions:
     def test_passes_with_nono_and_srt(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/nono")
         check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")
+
+
+class _StopClient:
+    model = "claude-sonnet-4.6"
+
+    def __init__(self, raise_exc=None):
+        self._raise = raise_exc
+
+    def chat(self, messages, tools=None, **kw):
+        if self._raise is not None:
+            raise self._raise
+        from boundary.clients.base import ChatResponse, Message as M
+
+        return ChatResponse(
+            message=M(role="assistant", content="done", tool_calls=[]),
+            finish_reason="stop",
+            input_tokens=0, output_tokens=1, cached_input_tokens=0,
+        )
+
+
+class FakeProxyHandle:
+    def __init__(self):
+        self.closed = False
+
+    def proxy_env(self):
+        return {
+            "HTTPS_PROXY": "http://nono:tok@127.0.0.1:5000",
+            "SSL_CERT_FILE": "/tmp/ca.pem",
+        }
+
+    def audit(self):
+        return []
+
+    def close(self):
+        self.closed = True
+
+
+class TestRunnerProxyLifecycle:
+    def _runner(self, monkeypatch, tmp_path, fake, client=None):
+        import boundary.envelope as env_mod
+        from boundary.agent import Agent
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
+        monkeypatch.setattr(
+            env_mod, "start_credential_proxy", lambda scopes, *, ca_dir: fake
+        )
+        agent = Agent(
+            name="s", system_prompt="x", workspace=str(tmp_path),
+            client=client or _StopClient(), enable_fs=True, enable_shell=False,
+            enable_web=False, transcript=False, sandbox_driver="srt",
+        )
+        env = Envelope(
+            writable_paths=["out.md"], require_staging=False, credential_scopes=_SCOPES,
+        )
+        return env_mod.EnvelopeRunner(agent, env)
+
+    def test_proxy_started_and_closed_on_success(self, monkeypatch, tmp_path):
+        fake = FakeProxyHandle()
+        self._runner(monkeypatch, tmp_path, fake).run("go")
+        assert fake.closed is True
+
+    def test_proxy_closed_even_when_agent_loop_raises(self, monkeypatch, tmp_path):
+        fake = FakeProxyHandle()
+        runner = self._runner(
+            monkeypatch, tmp_path, fake, client=_StopClient(raise_exc=RuntimeError("boom"))
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.run("go")
+        assert fake.closed is True
+
+    def test_egress_forced_loopback_and_proxy_env_set(self, monkeypatch, tmp_path):
+        fake = FakeProxyHandle()
+        runner = self._runner(monkeypatch, tmp_path, fake)
+        runner.run("go")
+        assert runner.agent.egress_allowlist == ["127.0.0.1", "localhost"]
+        assert runner.agent.proxy_env == fake.proxy_env()
