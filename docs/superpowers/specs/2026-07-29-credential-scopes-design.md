@@ -72,7 +72,12 @@ srt jail** — it lives only in the host-side proxy process.
    port with a per-session CA and compiled `--credential` / `--allow-endpoint`
    flags. Returns `{proxy_url, port, session_token, ca_path}`.
 3. The runner configures the srt caller:
-   - egress allowlist = `[127.0.0.1]` limited to the proxy port (nothing else);
+   - egress allowlist = **loopback only** (`127.0.0.1` / `localhost`). srt
+     expresses egress as `allowedDomains` (hostname-granular, not IP:port), so
+     the wiring is "allow loopback, allow no external domain." The nono proxy is
+     then the only network endpoint worth reaching; external hosts are refused at
+     the OS. (Port-level restriction is not an srt concept — loopback-only is the
+     boundary; nothing else the agent could reach on loopback is load-bearing.)
    - `HTTPS_PROXY` / `HTTP_PROXY = http://<session_token>@127.0.0.1:<port>`;
    - CA env vars (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
      `GIT_SSL_CAINFO`) = the per-session proxy CA (same pattern srt already uses).
@@ -147,7 +152,12 @@ Enforcement is hard (the proxy 403s out-of-scope regardless); the grade is the
 - `boundary/envelope.py` — add the `credential_scopes` field + parse-time
   validation + spec-hash inclusion.
 - The `run` path (`EnvelopeRunner`) — precondition gate, srt egress+env wiring,
-  transcript events, teardown in a `finally`.
+  transcript events, teardown in a `finally`. **Decision point:** srt settings
+  are currently built inside `run_sandboxed()` in `tools/sandbox.py`. The proxy
+  env (`HTTPS_PROXY`, CA vars) and the loopback-only egress restriction should be
+  threaded through that existing construction path rather than adding a parallel
+  jail — the runner passes the `ProxyHandle` coordinates down, and
+  `run_sandboxed` owns turning them into srt settings + caller env.
 - `boundary/third_umpire.py` — the `credential_scope_held` property.
 - `boundary/receipt.py` — bind the credential-scopes spec-hash.
 
@@ -178,6 +188,10 @@ is a function of the transcript.
 - Per-session CA trust inside the srt jail across HTTP clients (curl/git/node/
   python) — reuse srt's existing CA-env pattern; verify git in particular.
 - Startup latency / port-race of `nono proxy` under the ready-check timeout.
+- Exact srt-settings shape for "loopback-only egress" — confirm `allowedDomains`
+  with loopback entries plus no external domains yields the intended OS refusal
+  of everything but the proxy (and that HTTP(S)_PROXY over loopback is honored
+  inside the jail by curl/git/node/python).
 
 ## Why this clears the bar
 
