@@ -1,6 +1,14 @@
+import shutil
+
 import pytest
 
-from boundary.credential_proxy import CredentialScope, compile_nono_flags
+from boundary.credential_proxy import (
+    CredentialScope,
+    ProxyHandle,
+    compile_nono_flags,
+    parse_connection_info,
+    start_credential_proxy,
+)
 
 
 class TestCredentialScope:
@@ -141,3 +149,120 @@ class TestCompileNonoFlags:
 
     def test_empty_scopes_yields_empty_flags(self):
         assert compile_nono_flags([]) == []
+
+
+# Verbatim startup sample from docs/spikes/nono-proxy-runtime.md (nono 0.70.0).
+_STARTUP_SAMPLE = (
+    "  nono proxy listening on 127.0.0.1:61928\n"
+    "  proxy URL: http://nono:b7cf3e2b734fa9@127.0.0.1:61928\n"
+    "  token:     b7cf3e2b734fa9\n"
+    "  export HTTPS_PROXY=http://nono:b7cf3e2b734fa9@127.0.0.1:61928\n"
+    "  routes:\n"
+    "    https://api.github.com | creds: env://GITHUB_TOKEN \u2713 | intercept: on | endpoint_rules: 1\n"
+    "  TLS interception trust bundle: /Users/x/.local/state/nono/sessions/intercept-1-2/intercept-ca.pem\n"
+    "  Press Ctrl-C to stop.\n"
+)
+
+# Verbatim -vv --log-file sample from the spike doc.
+_AUDIT_SAMPLE = (
+    '2026-07-30T14:27:01.250061Z  INFO l7 endpoint policy decision mode=connect_intercept '
+    'target="api.github.com" method="GET" path="/repos/foo/bar/pulls" decision=Allow '
+    'endpoint_policy_action="allow" endpoint_policy_rule="endpoint_policy.allow[* /repos/*/pulls]"\n'
+    '2026-07-30T14:27:01.250072Z  INFO l7 endpoint policy decision mode=connect_intercept '
+    'target="api.github.com" method="GET" path="/repos/foo/bar/pulls" decision=Allow '
+    'endpoint_policy_action="allow" endpoint_policy_rule="endpoint_policy.allow[GET /repos/*/pulls]"\n'
+    '2026-07-30T14:27:01.647966Z  INFO l7 proxy response mode=connect_intercept '
+    'target="api.github.com" method="GET" path="/repos/foo/bar/pulls" status=401\n'
+    '2026-07-30T14:27:01.681666Z  WARN tls_intercept: endpoint rules denied GET '
+    '/repos/foo/bar/issues: no rule matched on api.github.com:443\n'
+    '2026-07-30T14:27:01.681677Z  INFO proxy request denied mode=connect_intercept '
+    'host="api.github.com" port=443 decision="deny" reason="endpoint rules denied GET '
+    '/repos/foo/bar/issues: no rule matched on api.github.com:443"\n'
+)
+
+
+class TestParseConnectionInfo:
+    def test_parses_url_token_port_ca_from_startup_output(self):
+        info = parse_connection_info(_STARTUP_SAMPLE)
+        assert info == {
+            "url": "http://nono:b7cf3e2b734fa9@127.0.0.1:61928",
+            "port": 61928,
+            "token": "b7cf3e2b734fa9",
+            "ca_path": "/Users/x/.local/state/nono/sessions/intercept-1-2/intercept-ca.pem",
+        }
+
+    def test_incomplete_output_raises(self):
+        with pytest.raises(RuntimeError, match="connection info"):
+            parse_connection_info("nothing useful here\n")
+
+
+class TestProxyEnv:
+    def test_proxy_env_uses_nono_url_verbatim_and_ca_vars(self):
+        handle = ProxyHandle(
+            process=None,
+            url="http://nono:abc123@127.0.0.1:54321",
+            port=54321,
+            token="abc123",
+            ca_path="/tmp/ca.pem",
+            audit_path="/tmp/audit.log",
+        )
+        assert handle.proxy_env() == {
+            "HTTP_PROXY": "http://nono:abc123@127.0.0.1:54321",
+            "HTTPS_PROXY": "http://nono:abc123@127.0.0.1:54321",
+            "http_proxy": "http://nono:abc123@127.0.0.1:54321",
+            "https_proxy": "http://nono:abc123@127.0.0.1:54321",
+            "NODE_EXTRA_CA_CERTS": "/tmp/ca.pem",
+            "SSL_CERT_FILE": "/tmp/ca.pem",
+            "CURL_CA_BUNDLE": "/tmp/ca.pem",
+            "GIT_SSL_CAINFO": "/tmp/ca.pem",
+        }
+
+
+class TestAuditParse:
+    def test_parses_allow_and_deny_records_deduped(self, tmp_path):
+        log = tmp_path / "nono-proxy.log"
+        log.write_text(_AUDIT_SAMPLE)
+        handle = ProxyHandle(
+            process=None, url="", port=0, token="", ca_path="",
+            audit_path=str(log),
+        )
+        assert handle.audit() == [
+            {"method": "GET", "path": "/repos/foo/bar/pulls", "allowed": True},
+            {"method": "GET", "path": "/repos/foo/bar/issues", "allowed": False},
+        ]
+
+    def test_missing_log_returns_empty(self, tmp_path):
+        handle = ProxyHandle(
+            process=None, url="", port=0, token="", ca_path="",
+            audit_path=str(tmp_path / "does-not-exist.log"),
+        )
+        assert handle.audit() == []
+
+
+requires_nono = pytest.mark.skipif(
+    shutil.which("nono") is None, reason="nono binary not installed"
+)
+
+
+@requires_nono
+class TestProxyLifecycle:
+    def test_start_ready_env_close(self, tmp_path):
+        scopes = [
+            CredentialScope(
+                service="github",
+                host="api.github.com",
+                credential_key="env://GITHUB_TOKEN",
+                allow_endpoints=["GET:/repos/*/pulls"],
+            )
+        ]
+        handle = start_credential_proxy(scopes, ca_dir=str(tmp_path))
+        try:
+            assert handle.port > 0
+            assert "127.0.0.1:" in handle.url
+            assert handle.token
+            env = handle.proxy_env()
+            assert env["HTTPS_PROXY"].endswith(f"127.0.0.1:{handle.port}")
+            assert env["SSL_CERT_FILE"] == handle.ca_path
+        finally:
+            handle.close()
+        assert handle.process.poll() is not None
