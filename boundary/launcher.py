@@ -113,7 +113,11 @@ def caller_srt_settings(
             "deniedDomains": [],
         },
         "filesystem": {
-            "allowRead": ["/"],
+            # No allowRead: per srt semantics reads are allowed everywhere by
+            # default and allowRead takes PRECEDENCE over denyRead, so an
+            # allowRead:["/"] silently re-allows every secret in denyRead
+            # (defeating it on macOS Seatbelt's last-match-wins). Omitting it
+            # keeps reads broad while letting the denylist bind. See #55 / F26.
             "allowWrite": [str(scratch)],
             "denyRead": default_deny_read() + list(deny_read or []),
             "denyWrite": [str(workspace_root)],
