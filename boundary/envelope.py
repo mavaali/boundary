@@ -23,15 +23,12 @@ from urllib.parse import urlsplit
 
 from boundary.agent import Agent
 from boundary.clients.base import Message
-from boundary.credential_proxy import (
-    CredentialScope,
-    start_credential_proxy,
-)
+from boundary.credential_proxy import CredentialScope
 
 
 class CredentialScopePreconditionError(RuntimeError):
     """Fail-closed refusal: credential_scopes set but the enforcement stack
-    (nono + srt) is unavailable, so the credential could not be bounded."""
+    (the nono sandbox driver) is unavailable, so the credential could not be bounded."""
 
 
 def check_credential_scope_preconditions(
@@ -39,9 +36,10 @@ def check_credential_scope_preconditions(
 ) -> None:
     """Refuse the run unless the credential-scoping enforcement stack is present.
 
-    A credential scope is only a real boundary when (a) nono is installed to run
-    the proxy and (b) the sandbox driver is srt, which OS-forces egress through
-    it. Anything else would silently hand the agent an unbounded credential.
+    A credential scope is only a real boundary when (a) nono is installed and
+    (b) the sandbox driver is 'nono', whose sandbox runs each bash command
+    through nono's credential proxy (phantom injection + endpoint 403). Anything
+    else would silently hand the agent an unbounded credential.
     """
     if not scopes:
         return
@@ -50,11 +48,11 @@ def check_credential_scope_preconditions(
             "credential_scopes set but nono is not installed; refusing to run "
             "(fail closed). Install nono or remove credential_scopes."
         )
-    if resolved_driver != "srt":
+    if resolved_driver != "nono":
         raise CredentialScopePreconditionError(
             f"credential_scopes set but sandbox driver resolved to "
-            f"{resolved_driver!r}, not 'srt'; only srt OS-forces egress through "
-            "the credential proxy. Refusing to run (fail closed)."
+            f"{resolved_driver!r}, not 'nono'; only the nono driver confines the "
+            "credential to the allowed endpoints. Refusing to run (fail closed)."
         )
 from boundary.loop import LoopResult
 from boundary.taint import TaintStore
@@ -1108,318 +1106,285 @@ class EnvelopeRunner:
         halted_for_budget = False
         halted_for_wallclock = False
         wall_start = _time.time()
-        # Credential proxy lifecycle (Task 8): start before the loop, force the
-        # agent's egress to loopback-only (so all traffic must traverse the proxy),
-        # inject the proxy env, and guarantee teardown in finally.
-        proxy_handle = None
-        proxy_scratch = None
-        if self.envelope.credential_scopes:
-            import tempfile
-            proxy_scratch = tempfile.mkdtemp(prefix="boundary-credproxy-")
-            try:
-                proxy_handle = start_credential_proxy(
-                    self.envelope.credential_scopes, ca_dir=proxy_scratch
-                )
-            except RuntimeError as exc:
-                shutil.rmtree(proxy_scratch, ignore_errors=True)
-                raise CredentialScopePreconditionError(
-                    f"credential proxy failed to start: {exc}"
-                ) from exc
-            self.agent.egress_allowlist = ["127.0.0.1", "localhost"]
-            self.agent.proxy_env = proxy_handle.proxy_env()
-        try:
-            for i in range(1, max_iters + 1):
-                iter_ref[0] = i
+        for i in range(1, max_iters + 1):
+            iter_ref[0] = i
 
-                # Wall-clock safety net
-                if self.envelope.max_wall_seconds is not None:
-                    elapsed = _time.time() - wall_start
-                    if elapsed >= self.envelope.max_wall_seconds:
-                        halted_for_wallclock = True
-                        events.append(EnvelopeEvent(
-                            "wallclock_halt", "loop",
-                            f"elapsed={elapsed:.1f}s cap={self.envelope.max_wall_seconds}s", i,
-                        ))
-                        if self.agent.transcript:
-                            self.agent.transcript.log("wallclock_halt", iteration=i, elapsed_seconds=elapsed)
-                        if verbose:
-                            print(f"[{i}] ENVELOPE HALT: wall-clock cap reached ({elapsed:.1f}s)")
-                        break
-
-                # Spend gate. est_dollars is accumulated per response (total_dollars)
-                # rather than recomputed from cumulative tokens, so a mid-run degrade
-                # to a cheaper model prices each segment at the rate that was active
-                # when it ran. For a fixed model this equals the cumulative estimate.
-                est_dollars = total_dollars
-                over_in = self.envelope.max_input_tokens is not None and total_in >= self.envelope.max_input_tokens
-                over_out = self.envelope.max_output_tokens is not None and total_out >= self.envelope.max_output_tokens
-                over_dollars = self.envelope.max_dollars is not None and est_dollars >= self.envelope.max_dollars
-                if over_in or over_out or over_dollars:
-                    halted_for_budget = True
+            # Wall-clock safety net
+            if self.envelope.max_wall_seconds is not None:
+                elapsed = _time.time() - wall_start
+                if elapsed >= self.envelope.max_wall_seconds:
+                    halted_for_wallclock = True
                     events.append(EnvelopeEvent(
-                        "budget_halt", "model",
-                        f"in={total_in} out={total_out} est=${est_dollars:.4f}", i,
+                        "wallclock_halt", "loop",
+                        f"elapsed={elapsed:.1f}s cap={self.envelope.max_wall_seconds}s", i,
                     ))
                     if self.agent.transcript:
-                        self.agent.transcript.log("budget_halt",
-                            iteration=i, input_tokens=total_in, output_tokens=total_out,
-                            cached_input_tokens=total_cached, estimated_dollars=est_dollars,
-                        )
+                        self.agent.transcript.log("wallclock_halt", iteration=i, elapsed_seconds=elapsed)
                     if verbose:
-                        print(f"[{i}] ENVELOPE HALT: spend cap reached (in={total_in} out={total_out} ${est_dollars:.4f})")
+                        print(f"[{i}] ENVELOPE HALT: wall-clock cap reached ({elapsed:.1f}s)")
                     break
 
-                # Fraction of whichever spend cap is closest to breach — shared by
-                # the spend-pressure gradient and the degrade action below.
-                sfracs = []
-                if self.envelope.max_input_tokens:
-                    sfracs.append(total_in / self.envelope.max_input_tokens)
-                if self.envelope.max_output_tokens:
-                    sfracs.append(total_out / self.envelope.max_output_tokens)
-                if self.envelope.max_dollars:
-                    sfracs.append(est_dollars / self.envelope.max_dollars)
-                spend_frac = max(sfracs) if sfracs else 0.0
-
-                # Degrade-to-cheaper-model: once spend crosses degrade_at, swap the
-                # run onto the cheaper model for the rest of the run instead of only
-                # nudging. Fires once; subsequent responses are priced at the cheaper
-                # rate (see total_dollars accumulation below).
-                if (self.envelope.degrade_to and self.envelope.degrade_at is not None
-                        and not degraded and 0 < self.envelope.degrade_at < 1
-                        and spend_frac >= self.envelope.degrade_at):
-                    degraded = True
-                    _from = model_name
-                    try:
-                        self.agent.client.model = self.envelope.degrade_to
-                    except Exception:
-                        pass
-                    model_name = self.envelope.degrade_to
-                    events.append(EnvelopeEvent("model_degrade", "model",
-                        f"{_from}->{model_name} at {int(spend_frac * 100)}% of cap", i))
-                    if self.agent.transcript:
-                        self.agent.transcript.log("model_degrade", iteration=i,
-                            from_model=_from, to_model=model_name,
-                            spend_fraction=round(spend_frac, 4))
-                    if verbose:
-                        print(f"[{i}] ENVELOPE DEGRADE: {_from} -> {model_name} "
-                              f"(spend {int(spend_frac * 100)}% of cap)")
-
-                # Spend-pressure gradient — soft landing before the hard cap. Warn
-                # the agent to converge at fractions of whichever spend cap is
-                # closest to breach, so budget_halt is a floor we approach on
-                # purpose, not a wall we hit mid-thought. Fires each threshold once;
-                # if a single step vaults past several, one nudge at the highest.
-                if self.envelope.spend_pressure_at:
-                    crossed = [t for t in self.envelope.spend_pressure_at
-                               if 0 < t < 1 and spend_frac >= t and t not in spend_pressure_fired]
-                    if crossed:
-                        spend_pressure_fired.update(crossed)
-                        cap_bits = []
-                        if self.envelope.max_dollars:
-                            cap_bits.append(f"${est_dollars:.4f}/${self.envelope.max_dollars:.2f}")
-                        if self.envelope.max_input_tokens:
-                            cap_bits.append(f"{total_in:,}/{self.envelope.max_input_tokens:,} in")
-                        if self.envelope.max_output_tokens:
-                            cap_bits.append(f"{total_out:,}/{self.envelope.max_output_tokens:,} out")
-                        spend_nudge = (
-                            f"[envelope] spend at {int(spend_frac * 100)}% of cap "
-                            f"({', '.join(cap_bits)}). Converge now: finish your current "
-                            f"write and stop before the budget halts the run."
-                        )
-                        messages.append(Message(role="user", content=spend_nudge))
-                        events.append(EnvelopeEvent(
-                            "spend_pressure", "model",
-                            f"frac={spend_frac:.2f} in={total_in} out={total_out} est=${est_dollars:.4f}", i,
-                        ))
-                        if self.agent.transcript:
-                            self.agent.transcript.log("spend_pressure",
-                                iteration=i, spend_fraction=round(spend_frac, 4),
-                                input_tokens=total_in, output_tokens=total_out,
-                                estimated_dollars=est_dollars, nudge=spend_nudge,
-                            )
-                        if verbose:
-                            print(f"[{i}] {spend_nudge}")
-
-                # Budget-pressure nudge
-                for pi in pressure_iters:
-                    if i == pi and pi not in pressure_fired:
-                        pressure_fired.add(pi)
-                        writes_so_far = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
-                        pct = int(100 * i / max_iters)
-                        if writes_so_far < self.envelope.min_writes:
-                            nudge = (
-                                f"[envelope] iter {i}/{max_iters} ({pct}%). "
-                                f"writes={writes_so_far} tokens_in={total_in} tokens_out={total_out}. "
-                                f"You need {self.envelope.min_writes} write(s) to "
-                                f"{self.envelope.writable_paths} before max_iters. "
-                                f"Stop gathering and write now."
-                            )
-                            messages.append(Message(role="user", content=nudge))
-                            if self.agent.transcript:
-                                self.agent.transcript.log("budget_pressure",
-                                    iteration=i, writes_so_far=writes_so_far,
-                                    input_tokens=total_in, output_tokens=total_out, nudge=nudge,
-                                )
-                            if verbose:
-                                print(f"[{i}] {nudge}")
-
+            # Spend gate. est_dollars is accumulated per response (total_dollars)
+            # rather than recomputed from cumulative tokens, so a mid-run degrade
+            # to a cheaper model prices each segment at the rate that was active
+            # when it ran. For a fixed model this equals the cumulative estimate.
+            est_dollars = total_dollars
+            over_in = self.envelope.max_input_tokens is not None and total_in >= self.envelope.max_input_tokens
+            over_out = self.envelope.max_output_tokens is not None and total_out >= self.envelope.max_output_tokens
+            over_dollars = self.envelope.max_dollars is not None and est_dollars >= self.envelope.max_dollars
+            if over_in or over_out or over_dollars:
+                halted_for_budget = True
+                events.append(EnvelopeEvent(
+                    "budget_halt", "model",
+                    f"in={total_in} out={total_out} est=${est_dollars:.4f}", i,
+                ))
                 if self.agent.transcript:
-                    self.agent.transcript.log("request", iteration=i, n_messages=len(messages))
-                chat_kwargs.setdefault("max_tokens", 32000)
-                resp: ChatResponse = self.agent.client.chat(messages, tools=tool_schemas, **chat_kwargs)
-                total_in += resp.input_tokens
-                total_out += resp.output_tokens
-                total_cached += resp.cached_input_tokens
-                total_cache_write += resp.cache_creation_input_tokens
-                total_dollars += self.envelope.estimate_cost(
-                    model_name, resp.input_tokens, resp.output_tokens,
-                    resp.cached_input_tokens, resp.cache_creation_input_tokens)
-                msg = resp.message
-                messages.append(msg)
-                if self.agent.transcript:
-                    self.agent.transcript.log("assistant",
-                        iteration=i, content=msg.content,
-                        tool_calls=[{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in msg.tool_calls],
-                        finish_reason=resp.finish_reason,
-                        input_tokens=resp.input_tokens,
-                        output_tokens=resp.output_tokens,
-                        cached_input_tokens=resp.cached_input_tokens,
-                        cumulative_in=total_in,
-                        cumulative_out=total_out,
-                        cumulative_cached=total_cached,
+                    self.agent.transcript.log("budget_halt",
+                        iteration=i, input_tokens=total_in, output_tokens=total_out,
+                        cached_input_tokens=total_cached, estimated_dollars=est_dollars,
                     )
                 if verbose:
-                    if msg.content:
-                        cache_note = f" cached={resp.cached_input_tokens}" if resp.cached_input_tokens else ""
-                        print(f"[{i}] assistant ({resp.input_tokens}/{resp.output_tokens} tok{cache_note}): {msg.content[:400]}")
-                    for tc in msg.tool_calls:
-                        print(f"[{i}] tool_call: {tc.name}({list(tc.arguments.keys())})")
-                if not msg.tool_calls:
-                    if resp.finish_reason == "tool_calls" and i < max_iters:
-                        messages.append(Message(role="user", content="(continue — you said you'd use tools; issue them now)"))
-                        continue
-                    # D: one-shot early-stop nudge. The agent terminated; if it
-                    # under-delivered (writes < min_writes) and budget remains, nudge
-                    # once to finish or to call ask_human. Fires at most once.
-                    _writes_so_far = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
-                    if (self.envelope.nudge_on_early_stop and not early_stop_nudged
-                            and _writes_so_far < self.envelope.min_writes and i < max_iters):
-                        early_stop_nudged = True
-                        _iters_left = max_iters - i
-                        _nudge = (
-                            f"[envelope] you stopped at iter {i}/{max_iters} with "
-                            f"{_writes_so_far}/{self.envelope.min_writes} required write(s) and "
-                            f"{_iters_left} iters left. Either write to "
-                            f"{self.envelope.writable_paths} now, or call ask_human if you are "
-                            f"blocked. Do not stop under-delivered."
-                        )
-                        messages.append(Message(role="user", content=_nudge))
-                        events.append(EnvelopeEvent("early_stop_nudge", "loop",
-                            f"writes={_writes_so_far}/{self.envelope.min_writes}", i))
-                        if self.agent.transcript:
-                            self.agent.transcript.log("early_stop_nudge",
-                                iteration=i, writes_so_far=_writes_so_far, nudge=_nudge)
-                        if verbose:
-                            print(f"[{i}] {_nudge}")
-                        continue
-                    break
-                for tc in msg.tool_calls:
-                    tool = enforced.get(tc.name)
-                    _raised: Exception | None = None
-                    if tool is None:
-                        result = f"ERROR: unknown tool {tc.name}"
-                    else:
-                        _preerr = _prevalidate_call(tool, tc.arguments)
-                        if _preerr is not None:
-                            # B: pre-exec validity gate — malformed call rejected
-                            # before the (expensive/side-effecting) tool runs.
-                            result = _preerr
-                        else:
-                            try:
-                                result = tool.call(tc.arguments)
-                            except Exception as e:
-                                _raised = e
-                                result = f"ERROR: {type(e).__name__}: {e}"
-                    # A: typed feedback classification — label every result so the
-                    # agent self-corrects on a category, not an opaque string.
-                    result_class = classify_tool_result(result, _raised)
-                    results_by_class[result_class] = results_by_class.get(result_class, 0) + 1
-                    # D: repeated-action / no-progress detection. Identical tool calls
-                    # (name + canonical args) repeated past a threshold signal a stuck
-                    # agent burning budget on unproductive exchanges. Warn in-band,
-                    # then halt the run once repeat_halt is reached.
-                    if self.envelope.repeat_halt:
-                        try:
-                            _sig = f"{tc.name}:{_json.dumps(tc.arguments, sort_keys=True, default=str)}"
-                        except Exception:
-                            _sig = f"{tc.name}:{tc.arguments!r}"
-                        _rc = action_counts.get(_sig, 0) + 1
-                        action_counts[_sig] = _rc
-                        if _rc >= self.envelope.repeat_halt:
-                            no_progress_halt = True
-                            events.append(EnvelopeEvent("no_progress", tc.name, f"identical call x{_rc}", i))
-                            result += (
-                                f"\n[envelope] NO-PROGRESS HALT: this exact call has run "
-                                f"{_rc}× with no new outcome. Stopping the run."
-                            )
-                        elif self.envelope.repeat_warn and _rc >= self.envelope.repeat_warn:
-                            result += (
-                                f"\n[envelope] repeated action: this exact call has run {_rc}× "
-                                f"with no new outcome. Change approach or stop — do not repeat it."
-                            )
-                    # Always-on budget banner: prefix every tool_result so the agent
-                    # cannot read a result without seeing remaining budget. This is
-                    # the "make constraints unavoidable, not buried in setup" fix.
-                    writes_used = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
-                    appends_used = enforced._counters.get("appends_executed", 0)  # type: ignore[attr-defined]
-                    ext_used = enforced._counters.get("external_calls", 0)  # type: ignore[attr-defined]
-                    staged = enforced._counters.get("staged", 0)  # type: ignore[attr-defined]
-                    unstaged_reads = enforced._counters.get("unstaged_reads", 0)  # type: ignore[attr-defined]
-                    iters_left = max_iters - i
-                    est_now = total_dollars
-                    banner_bits = [
-                        f"writes {writes_used}/{self.envelope.max_writes}",
-                        f"iters_left {iters_left}/{max_iters}",
-                        f"tokens {total_in:,}in/{total_out:,}out",
-                        f"${est_now:.4f}",
-                        f"staged {'yes' if staged else 'no'}",
-                        f"result {result_class}",
-                    ]
-                    if not staged and unstaged_reads:
-                        banner_bits.append(f"orientation_reads {unstaged_reads}/{self.envelope.max_unstaged_reads}")
-                    if appends_used:
-                        banner_bits.append(f"appends {appends_used}/{self.envelope.max_appends}")
-                    if self.envelope.max_dollars is not None:
-                        banner_bits.append(f"cap ${self.envelope.max_dollars:.2f}")
-                    if not self.envelope.is_priced(model_name) and self.envelope.on_unpriced_model != "zero":
-                        banner_bits.append("rate=fallback")
-                    if degraded:
-                        banner_bits.append(f"degraded→{model_name}")
-                    if ext_used:
-                        banner_bits.append(f"ext {ext_used}/{self.envelope.max_external}")
-                    banner = "[ENVELOPE: " + " | ".join(banner_bits) + "]"
-                    wrapped_result = banner + "\n" + result
-                    if self.agent.transcript:
-                        self.agent.transcript.log("tool_result", iteration=i, tool=tc.name, tool_call_id=tc.id, result=result[:2000], result_class=result_class)
-                    if verbose:
-                        print(f"[{i}] tool_result {tc.name}: {result[:300]}")
-                    messages.append(Message(role="tool", content=wrapped_result, tool_call_id=tc.id, name=tc.name))
-                if halt_flag[0] or commit_halt_flag[0] or no_progress_halt:
-                    break
+                    print(f"[{i}] ENVELOPE HALT: spend cap reached (in={total_in} out={total_out} ${est_dollars:.4f})")
+                break
 
-        finally:
-            if proxy_handle is not None:
-                for _rec in proxy_handle.audit():
-                    if not _rec.get("allowed", True):
-                        events.append(EnvelopeEvent(
-                            "credential_scope_violation",
-                            "credential_proxy",
-                            f"{_rec.get('method')} {_rec.get('path')} denied (out of scope)",
-                            iter_ref[0],
-                        ))
-                proxy_handle.close()
-                if proxy_scratch:
-                    shutil.rmtree(proxy_scratch, ignore_errors=True)
+            # Fraction of whichever spend cap is closest to breach — shared by
+            # the spend-pressure gradient and the degrade action below.
+            sfracs = []
+            if self.envelope.max_input_tokens:
+                sfracs.append(total_in / self.envelope.max_input_tokens)
+            if self.envelope.max_output_tokens:
+                sfracs.append(total_out / self.envelope.max_output_tokens)
+            if self.envelope.max_dollars:
+                sfracs.append(est_dollars / self.envelope.max_dollars)
+            spend_frac = max(sfracs) if sfracs else 0.0
+
+            # Degrade-to-cheaper-model: once spend crosses degrade_at, swap the
+            # run onto the cheaper model for the rest of the run instead of only
+            # nudging. Fires once; subsequent responses are priced at the cheaper
+            # rate (see total_dollars accumulation below).
+            if (self.envelope.degrade_to and self.envelope.degrade_at is not None
+                    and not degraded and 0 < self.envelope.degrade_at < 1
+                    and spend_frac >= self.envelope.degrade_at):
+                degraded = True
+                _from = model_name
+                try:
+                    self.agent.client.model = self.envelope.degrade_to
+                except Exception:
+                    pass
+                model_name = self.envelope.degrade_to
+                events.append(EnvelopeEvent("model_degrade", "model",
+                    f"{_from}->{model_name} at {int(spend_frac * 100)}% of cap", i))
+                if self.agent.transcript:
+                    self.agent.transcript.log("model_degrade", iteration=i,
+                        from_model=_from, to_model=model_name,
+                        spend_fraction=round(spend_frac, 4))
+                if verbose:
+                    print(f"[{i}] ENVELOPE DEGRADE: {_from} -> {model_name} "
+                          f"(spend {int(spend_frac * 100)}% of cap)")
+
+            # Spend-pressure gradient — soft landing before the hard cap. Warn
+            # the agent to converge at fractions of whichever spend cap is
+            # closest to breach, so budget_halt is a floor we approach on
+            # purpose, not a wall we hit mid-thought. Fires each threshold once;
+            # if a single step vaults past several, one nudge at the highest.
+            if self.envelope.spend_pressure_at:
+                crossed = [t for t in self.envelope.spend_pressure_at
+                           if 0 < t < 1 and spend_frac >= t and t not in spend_pressure_fired]
+                if crossed:
+                    spend_pressure_fired.update(crossed)
+                    cap_bits = []
+                    if self.envelope.max_dollars:
+                        cap_bits.append(f"${est_dollars:.4f}/${self.envelope.max_dollars:.2f}")
+                    if self.envelope.max_input_tokens:
+                        cap_bits.append(f"{total_in:,}/{self.envelope.max_input_tokens:,} in")
+                    if self.envelope.max_output_tokens:
+                        cap_bits.append(f"{total_out:,}/{self.envelope.max_output_tokens:,} out")
+                    spend_nudge = (
+                        f"[envelope] spend at {int(spend_frac * 100)}% of cap "
+                        f"({', '.join(cap_bits)}). Converge now: finish your current "
+                        f"write and stop before the budget halts the run."
+                    )
+                    messages.append(Message(role="user", content=spend_nudge))
+                    events.append(EnvelopeEvent(
+                        "spend_pressure", "model",
+                        f"frac={spend_frac:.2f} in={total_in} out={total_out} est=${est_dollars:.4f}", i,
+                    ))
+                    if self.agent.transcript:
+                        self.agent.transcript.log("spend_pressure",
+                            iteration=i, spend_fraction=round(spend_frac, 4),
+                            input_tokens=total_in, output_tokens=total_out,
+                            estimated_dollars=est_dollars, nudge=spend_nudge,
+                        )
+                    if verbose:
+                        print(f"[{i}] {spend_nudge}")
+
+            # Budget-pressure nudge
+            for pi in pressure_iters:
+                if i == pi and pi not in pressure_fired:
+                    pressure_fired.add(pi)
+                    writes_so_far = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
+                    pct = int(100 * i / max_iters)
+                    if writes_so_far < self.envelope.min_writes:
+                        nudge = (
+                            f"[envelope] iter {i}/{max_iters} ({pct}%). "
+                            f"writes={writes_so_far} tokens_in={total_in} tokens_out={total_out}. "
+                            f"You need {self.envelope.min_writes} write(s) to "
+                            f"{self.envelope.writable_paths} before max_iters. "
+                            f"Stop gathering and write now."
+                        )
+                        messages.append(Message(role="user", content=nudge))
+                        if self.agent.transcript:
+                            self.agent.transcript.log("budget_pressure",
+                                iteration=i, writes_so_far=writes_so_far,
+                                input_tokens=total_in, output_tokens=total_out, nudge=nudge,
+                            )
+                        if verbose:
+                            print(f"[{i}] {nudge}")
+
+            if self.agent.transcript:
+                self.agent.transcript.log("request", iteration=i, n_messages=len(messages))
+            chat_kwargs.setdefault("max_tokens", 32000)
+            resp: ChatResponse = self.agent.client.chat(messages, tools=tool_schemas, **chat_kwargs)
+            total_in += resp.input_tokens
+            total_out += resp.output_tokens
+            total_cached += resp.cached_input_tokens
+            total_cache_write += resp.cache_creation_input_tokens
+            total_dollars += self.envelope.estimate_cost(
+                model_name, resp.input_tokens, resp.output_tokens,
+                resp.cached_input_tokens, resp.cache_creation_input_tokens)
+            msg = resp.message
+            messages.append(msg)
+            if self.agent.transcript:
+                self.agent.transcript.log("assistant",
+                    iteration=i, content=msg.content,
+                    tool_calls=[{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in msg.tool_calls],
+                    finish_reason=resp.finish_reason,
+                    input_tokens=resp.input_tokens,
+                    output_tokens=resp.output_tokens,
+                    cached_input_tokens=resp.cached_input_tokens,
+                    cumulative_in=total_in,
+                    cumulative_out=total_out,
+                    cumulative_cached=total_cached,
+                )
+            if verbose:
+                if msg.content:
+                    cache_note = f" cached={resp.cached_input_tokens}" if resp.cached_input_tokens else ""
+                    print(f"[{i}] assistant ({resp.input_tokens}/{resp.output_tokens} tok{cache_note}): {msg.content[:400]}")
+                for tc in msg.tool_calls:
+                    print(f"[{i}] tool_call: {tc.name}({list(tc.arguments.keys())})")
+            if not msg.tool_calls:
+                if resp.finish_reason == "tool_calls" and i < max_iters:
+                    messages.append(Message(role="user", content="(continue — you said you'd use tools; issue them now)"))
+                    continue
+                # D: one-shot early-stop nudge. The agent terminated; if it
+                # under-delivered (writes < min_writes) and budget remains, nudge
+                # once to finish or to call ask_human. Fires at most once.
+                _writes_so_far = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
+                if (self.envelope.nudge_on_early_stop and not early_stop_nudged
+                        and _writes_so_far < self.envelope.min_writes and i < max_iters):
+                    early_stop_nudged = True
+                    _iters_left = max_iters - i
+                    _nudge = (
+                        f"[envelope] you stopped at iter {i}/{max_iters} with "
+                        f"{_writes_so_far}/{self.envelope.min_writes} required write(s) and "
+                        f"{_iters_left} iters left. Either write to "
+                        f"{self.envelope.writable_paths} now, or call ask_human if you are "
+                        f"blocked. Do not stop under-delivered."
+                    )
+                    messages.append(Message(role="user", content=_nudge))
+                    events.append(EnvelopeEvent("early_stop_nudge", "loop",
+                        f"writes={_writes_so_far}/{self.envelope.min_writes}", i))
+                    if self.agent.transcript:
+                        self.agent.transcript.log("early_stop_nudge",
+                            iteration=i, writes_so_far=_writes_so_far, nudge=_nudge)
+                    if verbose:
+                        print(f"[{i}] {_nudge}")
+                    continue
+                break
+            for tc in msg.tool_calls:
+                tool = enforced.get(tc.name)
+                _raised: Exception | None = None
+                if tool is None:
+                    result = f"ERROR: unknown tool {tc.name}"
+                else:
+                    _preerr = _prevalidate_call(tool, tc.arguments)
+                    if _preerr is not None:
+                        # B: pre-exec validity gate — malformed call rejected
+                        # before the (expensive/side-effecting) tool runs.
+                        result = _preerr
+                    else:
+                        try:
+                            result = tool.call(tc.arguments)
+                        except Exception as e:
+                            _raised = e
+                            result = f"ERROR: {type(e).__name__}: {e}"
+                # A: typed feedback classification — label every result so the
+                # agent self-corrects on a category, not an opaque string.
+                result_class = classify_tool_result(result, _raised)
+                results_by_class[result_class] = results_by_class.get(result_class, 0) + 1
+                # D: repeated-action / no-progress detection. Identical tool calls
+                # (name + canonical args) repeated past a threshold signal a stuck
+                # agent burning budget on unproductive exchanges. Warn in-band,
+                # then halt the run once repeat_halt is reached.
+                if self.envelope.repeat_halt:
+                    try:
+                        _sig = f"{tc.name}:{_json.dumps(tc.arguments, sort_keys=True, default=str)}"
+                    except Exception:
+                        _sig = f"{tc.name}:{tc.arguments!r}"
+                    _rc = action_counts.get(_sig, 0) + 1
+                    action_counts[_sig] = _rc
+                    if _rc >= self.envelope.repeat_halt:
+                        no_progress_halt = True
+                        events.append(EnvelopeEvent("no_progress", tc.name, f"identical call x{_rc}", i))
+                        result += (
+                            f"\n[envelope] NO-PROGRESS HALT: this exact call has run "
+                            f"{_rc}× with no new outcome. Stopping the run."
+                        )
+                    elif self.envelope.repeat_warn and _rc >= self.envelope.repeat_warn:
+                        result += (
+                            f"\n[envelope] repeated action: this exact call has run {_rc}× "
+                            f"with no new outcome. Change approach or stop — do not repeat it."
+                        )
+                # Always-on budget banner: prefix every tool_result so the agent
+                # cannot read a result without seeing remaining budget. This is
+                # the "make constraints unavoidable, not buried in setup" fix.
+                writes_used = enforced._counters.get("writes_executed", 0)  # type: ignore[attr-defined]
+                appends_used = enforced._counters.get("appends_executed", 0)  # type: ignore[attr-defined]
+                ext_used = enforced._counters.get("external_calls", 0)  # type: ignore[attr-defined]
+                staged = enforced._counters.get("staged", 0)  # type: ignore[attr-defined]
+                unstaged_reads = enforced._counters.get("unstaged_reads", 0)  # type: ignore[attr-defined]
+                iters_left = max_iters - i
+                est_now = total_dollars
+                banner_bits = [
+                    f"writes {writes_used}/{self.envelope.max_writes}",
+                    f"iters_left {iters_left}/{max_iters}",
+                    f"tokens {total_in:,}in/{total_out:,}out",
+                    f"${est_now:.4f}",
+                    f"staged {'yes' if staged else 'no'}",
+                    f"result {result_class}",
+                ]
+                if not staged and unstaged_reads:
+                    banner_bits.append(f"orientation_reads {unstaged_reads}/{self.envelope.max_unstaged_reads}")
+                if appends_used:
+                    banner_bits.append(f"appends {appends_used}/{self.envelope.max_appends}")
+                if self.envelope.max_dollars is not None:
+                    banner_bits.append(f"cap ${self.envelope.max_dollars:.2f}")
+                if not self.envelope.is_priced(model_name) and self.envelope.on_unpriced_model != "zero":
+                    banner_bits.append("rate=fallback")
+                if degraded:
+                    banner_bits.append(f"degraded→{model_name}")
+                if ext_used:
+                    banner_bits.append(f"ext {ext_used}/{self.envelope.max_external}")
+                banner = "[ENVELOPE: " + " | ".join(banner_bits) + "]"
+                wrapped_result = banner + "\n" + result
+                if self.agent.transcript:
+                    self.agent.transcript.log("tool_result", iteration=i, tool=tc.name, tool_call_id=tc.id, result=result[:2000], result_class=result_class)
+                if verbose:
+                    print(f"[{i}] tool_result {tc.name}: {result[:300]}")
+                messages.append(Message(role="tool", content=wrapped_result, tool_call_id=tc.id, name=tc.name))
+            if halt_flag[0] or commit_halt_flag[0] or no_progress_halt:
+                break
+
         c = enforced._counters  # type: ignore[attr-defined]
         est = total_dollars   # per-response accrual; correct across a mid-run degrade
         wall_seconds = _time.time() - wall_start
@@ -1470,7 +1435,7 @@ class EnvelopeRunner:
                 unstaged_reads=c.get("unstaged_reads", 0),
                 stage_calls=c.get("stage_calls", 0),
                 results_by_class=dict(results_by_class),
-                credential_scopes_enforced=proxy_handle is not None,
+                credential_scopes_enforced=bool(self.envelope.credential_scopes),
                 events=[{"kind": e.kind, "tool": e.tool, "detail": e.detail, "iteration": e.iteration} for e in events],
             )
         return EnvelopeRunResult(

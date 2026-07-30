@@ -19,15 +19,14 @@ def register_shell_tools(
         return
 
     def _bash(command: str) -> str:
-        # When an agent is wired in, read egress_allowlist and proxy_env LIVE at
-        # call-time: the runner sets proxy_env (and may tighten egress) AFTER the
-        # credential proxy starts, which is after this registration.
+        # When an agent is wired in, read egress_allowlist and credential_scopes
+        # LIVE at call-time (the runner may set them after this registration).
         if agent is not None:
             live_egress = agent.egress_allowlist
-            live_proxy = agent.proxy_env
+            live_scopes = agent.credential_scopes
         else:
             live_egress = egress_allowlist
-            live_proxy = None
+            live_scopes = None
         return run_sandboxed(
             command,
             workspace_root=workspace.root,
@@ -35,7 +34,7 @@ def register_shell_tools(
             driver=driver,
             egress_allowlist=live_egress,
             deny_read=deny_read,
-            proxy_env=live_proxy,
+            credential_scopes=live_scopes,
         )
 
     @registry.add(

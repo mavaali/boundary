@@ -52,10 +52,9 @@ class Agent:
         self.sandbox_driver = sandbox_driver
         self.egress_allowlist = list(egress_allowlist or [])
         self.deny_read = list(deny_read or [])
+        # Read live by the bash tool at call-time (register_shell_tools(agent=self))
+        # so a run under --sandbox-driver nono confines each command's credential.
         self.credential_scopes = list(credential_scopes or [])
-        # Set by EnvelopeRunner after the credential proxy starts; the bash tool
-        # reads it live at call-time (see register_shell_tools(..., agent=self)).
-        self.proxy_env: dict | None = None
         self.workspace = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
         if isinstance(client, str):
             self.client = make_client(client, **(client_kwargs or {}))

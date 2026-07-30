@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                      dest="credential_scopes",
                      metavar="service=NAME,host=HOST,key=env://VAR,endpoint=METHOD:/path[,endpoint=...]",
                      help="scope a credential to specific HTTP method+path patterns, enforced via "
-                          "the nono proxy under --sandbox-driver srt (fail-closed). Repeatable.")
+                          "the nono sandbox under --sandbox-driver nono (fail-closed). Repeatable.")
     run.add_argument("--persona", help="path to a persona charter.md to load as system prompt (Clawpilot adapter)")
     run.add_argument("--web", action="store_true", help="enable fetch_url tool")
     run.add_argument("--clawpilot", action="store_true", help="enable skill_load/charter_load/workiq bridge tools")

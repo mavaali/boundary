@@ -102,14 +102,14 @@ class TestCredentialScopePreconditions:
         with pytest.raises(CredentialScopePreconditionError, match="nono"):
             check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")
 
-    def test_refuses_when_driver_not_srt(self, monkeypatch):
+    def test_refuses_when_driver_not_nono(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/nono")
-        with pytest.raises(CredentialScopePreconditionError, match="srt"):
-            check_credential_scope_preconditions(_SCOPES, resolved_driver="seatbelt")
+        with pytest.raises(CredentialScopePreconditionError, match="nono"):
+            check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")
 
-    def test_passes_with_nono_and_srt(self, monkeypatch):
+    def test_passes_with_nono_installed_and_nono_driver(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/nono")
-        check_credential_scope_preconditions(_SCOPES, resolved_driver="srt")
+        check_credential_scope_preconditions(_SCOPES, resolved_driver="nono")
 
 
 class _StopClient:
@@ -130,62 +130,45 @@ class _StopClient:
         )
 
 
-class FakeProxyHandle:
-    def __init__(self):
-        self.closed = False
-
-    def proxy_env(self):
-        return {
-            "HTTPS_PROXY": "http://nono:tok@127.0.0.1:5000",
-            "SSL_CERT_FILE": "/tmp/ca.pem",
-        }
-
-    def audit(self):
-        return []
-
-    def close(self):
-        self.closed = True
-
-
-class TestRunnerProxyLifecycle:
-    def _runner(self, monkeypatch, tmp_path, fake, client=None):
+class TestRunnerCredentialScopes:
+    def _runner(self, monkeypatch, tmp_path, *, driver, transcript=False):
         import boundary.envelope as env_mod
         from boundary.agent import Agent
 
+        # nono "installed" for the precondition; driver passed explicitly so no
+        # auto-resolution touches the real binary.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
-        monkeypatch.setattr(
-            env_mod, "start_credential_proxy", lambda scopes, *, ca_dir: fake
-        )
         agent = Agent(
             name="s", system_prompt="x", workspace=str(tmp_path),
-            client=client or _StopClient(), enable_fs=True, enable_shell=False,
-            enable_web=False, transcript=False, sandbox_driver="srt",
+            client=_StopClient(), enable_fs=True, enable_shell=False,
+            enable_web=False, transcript=transcript, sandbox_driver=driver,
         )
         env = Envelope(
             writable_paths=["out.md"], require_staging=False, credential_scopes=_SCOPES,
         )
         return env_mod.EnvelopeRunner(agent, env)
 
-    def test_proxy_started_and_closed_on_success(self, monkeypatch, tmp_path):
-        fake = FakeProxyHandle()
-        self._runner(monkeypatch, tmp_path, fake).run("go")
-        assert fake.closed is True
+    def test_scoped_run_under_nono_completes(self, monkeypatch, tmp_path):
+        # Precondition passes (nono installed + driver nono); run completes.
+        self._runner(monkeypatch, tmp_path, driver="nono").run("go")
 
-    def test_proxy_closed_even_when_agent_loop_raises(self, monkeypatch, tmp_path):
-        fake = FakeProxyHandle()
-        runner = self._runner(
-            monkeypatch, tmp_path, fake, client=_StopClient(raise_exc=RuntimeError("boom"))
-        )
-        with pytest.raises(RuntimeError, match="boom"):
+    def test_scoped_run_refused_when_driver_not_nono(self, monkeypatch, tmp_path):
+        runner = self._runner(monkeypatch, tmp_path, driver="srt")
+        with pytest.raises(CredentialScopePreconditionError, match="nono"):
             runner.run("go")
-        assert fake.closed is True
 
-    def test_egress_forced_loopback_and_proxy_env_set(self, monkeypatch, tmp_path):
-        fake = FakeProxyHandle()
-        runner = self._runner(monkeypatch, tmp_path, fake)
-        runner.run("go")
-        assert runner.agent.egress_allowlist == ["127.0.0.1", "localhost"]
-        assert runner.agent.proxy_env == fake.proxy_env()
+    def test_envelope_end_logs_enforced_flag(self, monkeypatch, tmp_path):
+        import json
+
+        from boundary.transcript import Transcript
+
+        tpath = tmp_path / "run.jsonl"
+        self._runner(
+            monkeypatch, tmp_path, driver="nono", transcript=Transcript(path=tpath)
+        ).run("go")
+        ends = [json.loads(line) for line in tpath.read_text().splitlines()
+                if '"envelope_end"' in line]
+        assert ends and ends[0].get("credential_scopes_enforced") is True
 
 
 class TestParseCredentialScopeArg:

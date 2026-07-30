@@ -526,31 +526,30 @@ class ThirdUmpire:
                 ))
 
         # Check 17: credential_scope_held — the credential-scoping leg. A run that
-        # declared credential_scopes is graded on out-of-scope credential attempts.
-        # The nono proxy already blocks them (403); this surfaces, in the verdict,
-        # that the agent *tried*. Only reported when scopes were actually in play.
+        # declared credential_scopes is attested as enforced by the nono sandbox
+        # (phantom-injected credential + out-of-scope endpoints 403). A declared-
+        # but-not-enforced run (driver wasn't nono) is a fail: the credential was
+        # unbounded. Only reported when scopes were actually in play.
         credential_scopes = (envelope_start or {}).get("credential_scopes", [])
         if credential_scopes:
-            scope_violations = [
-                e for e in envelope_events
-                if e.get("kind") == "credential_scope_violation"
-            ]
-            if scope_violations:
+            enforced = (envelope_end or {}).get("credential_scopes_enforced", False)
+            if enforced:
                 report.checks.append(CheckResult(
                     "credential_scope_held",
-                    passed=False,
-                    detail=(f"{len(scope_violations)} out-of-scope credential attempt(s) "
-                            f"(blocked at the proxy, but the agent tried): "
-                            + "; ".join(e.get("detail", "") for e in scope_violations)),
-                    severity="fail",
+                    passed=True,
+                    detail=(f"{len(credential_scopes)} credential scope(s) enforced by the "
+                            "nono sandbox (credential phantom-injected; out-of-scope "
+                            "endpoints hard-blocked with 403)"),
+                    severity="info",
                 ))
             else:
                 report.checks.append(CheckResult(
                     "credential_scope_held",
-                    passed=True,
-                    detail=(f"{len(credential_scopes)} credential scope(s) enforced; "
-                            "zero out-of-scope attempts"),
-                    severity="info",
+                    passed=False,
+                    detail=(f"{len(credential_scopes)} credential scope(s) declared but NOT "
+                            "enforced (sandbox driver was not 'nono'); the credential was "
+                            "unbounded for this run"),
+                    severity="fail",
                 ))
 
         # Check 14: envelope downgrades — guardrails the operator disabled.

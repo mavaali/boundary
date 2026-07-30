@@ -28,7 +28,7 @@ from pathlib import Path
 # warning that egress is uncontained, else a hard error (never silently drop the
 # jail). Explicit "srt" stays strict — a deliberate security choice fails loudly
 # rather than degrading.
-SANDBOX_DRIVERS = ("auto", "seatbelt", "srt", "none")
+SANDBOX_DRIVERS = ("auto", "seatbelt", "srt", "nono", "none")
 
 _WARNED_MESSAGES: set[str] = set()
 _AUTO_WARNED_LOCK = threading.Lock()
@@ -66,12 +66,9 @@ def resolve_auto_driver() -> tuple[str | None, str | None]:
     return None, None
 
 
-def _jail_env(workspace_root: Path, proxy_env: dict | None = None) -> dict:
+def _jail_env(workspace_root: Path) -> dict:
     """Env that points caches/temp/HOME at the workspace so stray writes land
-    inside the jail rather than the real home directory.
-
-    proxy_env (credential proxy: HTTP(S)_PROXY + CA vars) is merged last so the
-    jailed process routes all egress through the proxy and trusts its CA."""
+    inside the jail rather than the real home directory."""
     tmp_dir = workspace_root / ".boundary-tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -84,8 +81,6 @@ def _jail_env(workspace_root: Path, proxy_env: dict | None = None) -> dict:
         "XDG_CONFIG_HOME": str(tmp_dir / "config"),
         "XDG_DATA_HOME": str(tmp_dir / "data"),
     })
-    if proxy_env:
-        env.update(proxy_env)
     return env
 
 
@@ -116,7 +111,7 @@ def run_sandboxed(
     driver: str = "auto",
     egress_allowlist: list[str] | None = None,
     deny_read: list[str] | None = None,
-    proxy_env: dict | None = None,
+    credential_scopes: list | None = None,
 ) -> str:
     root = Path(workspace_root).resolve()
     if driver == "auto":
@@ -140,7 +135,9 @@ def run_sandboxed(
     if driver == "seatbelt":
         return _run_seatbelt(command, root, timeout)
     if driver == "srt":
-        return _run_srt(command, root, timeout, egress_allowlist or [], deny_read or [], proxy_env)
+        return _run_srt(command, root, timeout, egress_allowlist or [], deny_read or [])
+    if driver == "nono":
+        return _run_nono(command, root, timeout, egress_allowlist or [], credential_scopes or [])
     if driver == "none":
         return _run_none(command, root, timeout)
     return f"ERROR: unknown sandbox driver {driver!r} (expected one of {SANDBOX_DRIVERS})."
@@ -209,14 +206,14 @@ def _srt_settings(root: Path, egress_allowlist: list[str], deny_read: list[str])
 
 
 def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str],
-             deny_read: list[str] | None = None, proxy_env: dict | None = None) -> str:
+             deny_read: list[str] | None = None) -> str:
     srt = shutil.which("srt")
     if not srt:
         return (
             "ERROR: srt not found. Install with `npm install -g @anthropic-ai/sandbox-runtime` "
             "or choose a different --sandbox-driver."
         )
-    env = _jail_env(root, proxy_env=proxy_env)
+    env = _jail_env(root)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
         json.dump(_srt_settings(root, egress_allowlist, deny_read or []), f)
         settings_path = f.name
@@ -235,6 +232,53 @@ def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str]
             Path(settings_path).unlink()
         except OSError:
             pass
+
+
+# ---- nono (capability sandbox + credential-scoping proxy) -------------------
+
+def _nono_command(command: str, root: Path, egress_allowlist: list[str],
+                  credential_scopes: list, log_file: str | None = None) -> list[str]:
+    """Build the `nono run` argv: fs write-jail (--allow), egress (--allow-domain
+    / --block-net), and credential scoping (compile_nono_flags). Pure; unit-tested.
+
+    nono denies reads by default, so secrets outside the workspace are hidden
+    without an explicit denylist. The credential is phantom-injected upstream of
+    the child (never in its env); out-of-scope endpoints 403. See spike doc."""
+    from boundary.credential_proxy import compile_nono_flags
+
+    cmd = ["nono", "run", "--allow", str(root), "--allow-cwd", "-s"]
+    if log_file:
+        cmd += ["--log-file", log_file]
+    for domain in egress_allowlist:
+        cmd += ["--allow-domain", domain]
+    cmd += compile_nono_flags(credential_scopes)
+    if not egress_allowlist and not credential_scopes:
+        cmd += ["--block-net"]
+    cmd += ["--", "bash", "-c", command]
+    return cmd
+
+
+def _run_nono(command: str, root: Path, timeout: int, egress_allowlist: list[str],
+              credential_scopes: list) -> str:
+    if not shutil.which("nono"):
+        return (
+            "ERROR: nono not found. Install nono (the capability sandbox) or "
+            "choose a different --sandbox-driver."
+        )
+    # nono owns the jail and needs the REAL HOME for its own session state
+    # (~/.local/state/nono) and keychain-backed credential resolution, so we do
+    # NOT repoint HOME with _jail_env here (unlike srt/seatbelt/none).
+    try:
+        r = subprocess.run(
+            _nono_command(command, root, egress_allowlist, credential_scopes),
+            cwd=str(root), env=os.environ.copy(), capture_output=True, text=True,
+            timeout=timeout, stdin=subprocess.DEVNULL,
+        )
+        return _format(r)
+    except subprocess.TimeoutExpired:
+        return f"ERROR: command timed out after {timeout}s"
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
 # ---- none (explicit opt-out) ------------------------------------------------

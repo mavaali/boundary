@@ -1,9 +1,9 @@
-"""Third Umpire credential_scope_held: grade a scoped run on out-of-scope attempts.
+"""Third Umpire credential_scope_held: attest a scoped run was enforced.
 
-The nono proxy hard-blocks out-of-scope credential use (403); this check surfaces,
-in the verdict, that the agent *tried* — graded from credential_scope_violation
-events the runner emits from the proxy audit. A run that declared no scopes gets
-no check (consistent with egress_uncontained: only report the dimensions in play).
+A run that declared credential_scopes is graded on whether the nono sandbox
+enforced them (credential_scopes_enforced). Declared-but-not-enforced is a fail
+(the credential was unbounded). No scopes -> no check (consistent with
+egress_uncontained: only report the dimensions in play).
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _SCOPE = {
 }
 
 
-def _tx(tmp_path, *, credential_scopes, events):
+def _tx(tmp_path, *, credential_scopes, enforced):
     records = [
         {"type": "envelope_start", "writable_paths": ["out.md"],
          "require_staging": False, "max_writes": 10,
@@ -28,7 +28,8 @@ def _tx(tmp_path, *, credential_scopes, events):
         {"type": "envelope_end", "writes_attempted": 1, "writes_executed": 1,
          "external_calls": 0, "commit_attempted": 0, "commit_executed": 0,
          "input_tokens": 1000, "output_tokens": 500, "estimated_dollars": 0.01,
-         "sandbox_driver": "srt", "events": events},
+         "sandbox_driver": "nono", "credential_scopes_enforced": enforced,
+         "events": []},
         {"type": "end", "iterations": 2},
     ]
     path = tmp_path / "t.jsonl"
@@ -42,26 +43,20 @@ def _held(report):
 
 class TestCredentialScopeHeld:
     def test_no_scopes_no_check(self, tmp_path):
-        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[], events=[]))
+        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[], enforced=False))
         assert _held(report) is None
 
-    def test_scopes_and_no_violations_passes(self, tmp_path):
-        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[_SCOPE], events=[]))
+    def test_scopes_enforced_passes(self, tmp_path):
+        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[_SCOPE], enforced=True))
         result = _held(report)
         assert result is not None
         assert result.passed is True
         assert result.severity == "info"
 
-    def test_violation_event_fails(self, tmp_path):
-        events = [{
-            "kind": "credential_scope_violation",
-            "tool": "credential_proxy",
-            "detail": "POST /repos/x/issues denied (out of scope)",
-            "iteration": 1,
-        }]
-        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[_SCOPE], events=events))
+    def test_scopes_declared_but_not_enforced_fails(self, tmp_path):
+        report = ThirdUmpire.grade(_tx(tmp_path, credential_scopes=[_SCOPE], enforced=False))
         result = _held(report)
         assert result is not None
         assert result.passed is False
         assert result.severity == "fail"
-        assert "POST" in result.detail and "/repos/x/issues" in result.detail
+        assert "not" in result.detail.lower()
