@@ -244,6 +244,60 @@ requires_nono = pytest.mark.skipif(
 )
 
 
+class TestProxyEnvMerging:
+    def test_jail_env_merges_proxy_env(self, tmp_path):
+        from boundary.tools.sandbox import _jail_env
+
+        env = _jail_env(
+            tmp_path,
+            proxy_env={
+                "HTTPS_PROXY": "http://tok@127.0.0.1:5000",
+                "SSL_CERT_FILE": "/tmp/ca.pem",
+            },
+        )
+        assert env["HTTPS_PROXY"] == "http://tok@127.0.0.1:5000"
+        assert env["SSL_CERT_FILE"] == "/tmp/ca.pem"
+
+    def test_jail_env_without_proxy_env_unchanged(self, tmp_path, monkeypatch):
+        from boundary.tools.sandbox import _jail_env
+
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        env = _jail_env(tmp_path)
+        assert "HTTPS_PROXY" not in env
+
+
+class TestLiveReadWiring:
+    def test_bash_reads_egress_and_proxy_env_at_call_time(self, monkeypatch, tmp_path):
+        import boundary.tools.shell as shell_mod
+        from boundary.tools.registry import ToolRegistry
+        from boundary.tools.workspace import Workspace
+
+        captured: dict = {}
+
+        def fake_run_sandboxed(command, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(shell_mod, "run_sandboxed", fake_run_sandboxed)
+
+        class FakeAgent:
+            egress_allowlist: list = []
+            proxy_env = None
+
+        agent = FakeAgent()
+        reg = ToolRegistry()
+        shell_mod.register_shell_tools(
+            reg, Workspace(str(tmp_path)), driver="srt", agent=agent
+        )
+        # The runner sets these AFTER tool registration:
+        agent.proxy_env = {"HTTPS_PROXY": "http://nono:tok@127.0.0.1:5000"}
+        agent.egress_allowlist = ["127.0.0.1", "localhost"]
+
+        reg.get("bash").call({"command": "echo hi", "reason": "x"})
+        assert captured["proxy_env"] == {"HTTPS_PROXY": "http://nono:tok@127.0.0.1:5000"}
+        assert captured["egress_allowlist"] == ["127.0.0.1", "localhost"]
+
+
 @requires_nono
 class TestProxyLifecycle:
     def test_start_ready_env_close(self, tmp_path):

@@ -66,9 +66,12 @@ def resolve_auto_driver() -> tuple[str | None, str | None]:
     return None, None
 
 
-def _jail_env(workspace_root: Path) -> dict:
+def _jail_env(workspace_root: Path, proxy_env: dict | None = None) -> dict:
     """Env that points caches/temp/HOME at the workspace so stray writes land
-    inside the jail rather than the real home directory."""
+    inside the jail rather than the real home directory.
+
+    proxy_env (credential proxy: HTTP(S)_PROXY + CA vars) is merged last so the
+    jailed process routes all egress through the proxy and trusts its CA."""
     tmp_dir = workspace_root / ".boundary-tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -81,6 +84,8 @@ def _jail_env(workspace_root: Path) -> dict:
         "XDG_CONFIG_HOME": str(tmp_dir / "config"),
         "XDG_DATA_HOME": str(tmp_dir / "data"),
     })
+    if proxy_env:
+        env.update(proxy_env)
     return env
 
 
@@ -111,6 +116,7 @@ def run_sandboxed(
     driver: str = "auto",
     egress_allowlist: list[str] | None = None,
     deny_read: list[str] | None = None,
+    proxy_env: dict | None = None,
 ) -> str:
     root = Path(workspace_root).resolve()
     if driver == "auto":
@@ -134,7 +140,7 @@ def run_sandboxed(
     if driver == "seatbelt":
         return _run_seatbelt(command, root, timeout)
     if driver == "srt":
-        return _run_srt(command, root, timeout, egress_allowlist or [], deny_read or [])
+        return _run_srt(command, root, timeout, egress_allowlist or [], deny_read or [], proxy_env)
     if driver == "none":
         return _run_none(command, root, timeout)
     return f"ERROR: unknown sandbox driver {driver!r} (expected one of {SANDBOX_DRIVERS})."
@@ -203,14 +209,14 @@ def _srt_settings(root: Path, egress_allowlist: list[str], deny_read: list[str])
 
 
 def _run_srt(command: str, root: Path, timeout: int, egress_allowlist: list[str],
-             deny_read: list[str] | None = None) -> str:
+             deny_read: list[str] | None = None, proxy_env: dict | None = None) -> str:
     srt = shutil.which("srt")
     if not srt:
         return (
             "ERROR: srt not found. Install with `npm install -g @anthropic-ai/sandbox-runtime` "
             "or choose a different --sandbox-driver."
         )
-    env = _jail_env(root)
+    env = _jail_env(root, proxy_env=proxy_env)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
         json.dump(_srt_settings(root, egress_allowlist, deny_read or []), f)
         settings_path = f.name

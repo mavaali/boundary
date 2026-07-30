@@ -31,6 +31,7 @@ class Agent:
         sandbox_driver: str = "auto",
         egress_allowlist: list[str] | None = None,
         deny_read: list[str] | None = None,
+        credential_scopes: list | None = None,
         max_iters: int = 25,
         transcript: Transcript | None | bool = True,
         client_kwargs: dict | None = None,
@@ -51,6 +52,10 @@ class Agent:
         self.sandbox_driver = sandbox_driver
         self.egress_allowlist = list(egress_allowlist or [])
         self.deny_read = list(deny_read or [])
+        self.credential_scopes = list(credential_scopes or [])
+        # Set by EnvelopeRunner after the credential proxy starts; the bash tool
+        # reads it live at call-time (see register_shell_tools(..., agent=self)).
+        self.proxy_env: dict | None = None
         self.workspace = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
         if isinstance(client, str):
             self.client = make_client(client, **(client_kwargs or {}))
@@ -63,7 +68,7 @@ class Agent:
             register_shell_tools(
                 self.tools, self.workspace, timeout=shell_timeout, allow=True,
                 driver=sandbox_driver, egress_allowlist=egress_allowlist,
-                deny_read=self.deny_read,
+                deny_read=self.deny_read, agent=self,
             )
         if enable_web:
             # fetch_url makes in-process HTTP calls that the srt sandbox (which
