@@ -1,8 +1,19 @@
 # Credential Scopes — an L7 credential-scoping leg for the envelope
 
-**Status:** design (approved 2026-07-29)
+> **⚠️ ARCHITECTURE UPDATED (2026-07-30): implemented as a nono sandbox DRIVER, not srt + standalone proxy.**
+> The srt + `nono proxy` composition below was built but abandoned during implementation:
+> srt runs its own egress MITM proxy (clobbers the injected proxy) and the jail env leaks
+> the credential. `nono run` provides the OS jail *and* the credential proxy in one
+> invocation — phantom injection with no leak, verified live. The primitives (`CredentialScope`,
+> `compile_nono_flags`, envelope field, CLI flag, Umpire grade) are unchanged; only the
+> enforcement mechanism moved from "inject into srt" to "run under the nono driver".
+> Current-state record: `docs/spikes/nono-proxy-runtime.md` (Architecture pivot section) and
+> the Daftari vault `projects/boundary-credential-scopes.md`. Read the rest of this spec as
+> historical design context.
+
+**Status:** design (approved 2026-07-29; enforcement mechanism revised 2026-07-30 → nono driver)
 **Author:** brainstormed with Mihir via Mavaali
-**Depends on:** srt (OS egress jail), nono ≥ 0.70 (standalone credential proxy)
+**Depends on:** nono (the capability sandbox driver; credential proxy is built in)
 
 ## Problem
 

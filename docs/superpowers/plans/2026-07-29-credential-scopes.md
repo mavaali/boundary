@@ -1,5 +1,15 @@
 # Credential Scopes Implementation Plan
 
+> **⚠️ IMPLEMENTED WITH A REVISED ARCHITECTURE (2026-07-30).** This plan targets srt + a
+> standalone `nono proxy` composed via env injection. During execution that approach was
+> found not to hold (srt owns `HTTP(S)_PROXY` and clobbers the injected proxy; the jail env
+> leaks the credential). It was replaced by a **nono sandbox driver** (`_run_nono`): each bash
+> command runs under `nono run` with the scope flags, which does the fs jail + egress +
+> credential scoping natively (phantom injection, no leak). Tasks 1–3/5/9/10 landed as written;
+> Tasks 4/6/8 were superseded by the driver; Task 7's precondition flips srt→nono; Task 11's
+> probe passes. See `docs/spikes/nono-proxy-runtime.md` (Architecture pivot) and the Daftari
+> vault `projects/boundary-credential-scopes.md` for the as-built design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax.
 
 **Goal:** Add a first-class `credential_scopes` envelope leg that bounds WHICH credential an agent wields and WHICH HTTP method+path patterns it may use it against. Enforcement: srt jails the caller with loopback-only egress pointed at a standalone `nono proxy` that does phantom-token credential injection + L7 endpoint scoping (403 out-of-scope). The real credential never enters the jail. boundary owns the field, fail-closed preconditions, and a Third Umpire `credential_scope_held` grade bound into the receipt. v1 = the `run` path only.
