@@ -254,7 +254,16 @@ def _nono_command(command: str, root: Path, egress_allowlist: list[str],
     cmd += compile_nono_flags(credential_scopes)
     if not egress_allowlist and not credential_scopes:
         cmd += ["--block-net"]
-    cmd += ["--", "bash", "-c", command]
+    # Resolve bash to an absolute path in the PARENT (which has a full PATH).
+    # nono's own binary resolution is PATH-sensitive and fails with
+    # "cannot find binary path" when the child PATH is minimal; an absolute
+    # path sidesteps that (matches the seatbelt/none drivers).
+    bash = shutil.which("bash") or "/bin/bash"
+    # -lc (login shell), matching the seatbelt/srt/none drivers: a login shell
+    # sources /etc/profile and gets a full system PATH, so commands (env, curl,
+    # git) resolve even when nono hands the child a minimal PATH. Plain -c left
+    # the child with only nono's shim dir on PATH → "command not found".
+    cmd += ["--", bash, "-lc", command]
     return cmd
 
 

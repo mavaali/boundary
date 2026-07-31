@@ -99,10 +99,17 @@ class TestNonoCommand:
         )
         cmd = _nono_command("echo hi", tmp_path, ["extra.example.com"], [scope])
         assert cmd[:6] == ["nono", "run", "--allow", str(tmp_path), "--allow-cwd", "-s"]
-        assert cmd[-4:] == ["--", "bash", "-c", "echo hi"]
-        assert "--allow-domain" in cmd and "extra.example.com" in cmd
-        assert "--credential" in cmd and "github" in cmd
-        assert "https://api.github.com/repos/*/pulls" in cmd
+        # bash is resolved to an absolute path (nono binary resolution is
+        # PATH-sensitive); assert the shape without pinning the exact path.
+        assert cmd[-4] == "--" and cmd[-3].endswith("bash")
+        assert cmd[-2:] == ["-lc", "echo hi"]
+        # Assert exact flag+value adjacency (not loose membership): the value
+        # must immediately follow its flag, which also avoids a bare-hostname
+        # substring check that reads as incomplete URL sanitization.
+        pairs = list(zip(cmd, cmd[1:]))
+        assert ("--allow-domain", "extra.example.com") in pairs
+        assert ("--credential", "github") in pairs
+        assert ("--allow-domain", "https://api.github.com/repos/*/pulls") in pairs
         assert "--block-net" not in cmd
 
     def test_block_net_when_sealed(self, tmp_path):

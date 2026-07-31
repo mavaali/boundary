@@ -78,6 +78,13 @@ def compile_nono_flags(scopes: list[CredentialScope]) -> list[str]:
       --allow-domain https://<host>/p        hard block (403) outside the paths
 
     --allow-domain is method-agnostic, so paths are de-duplicated across methods.
+
+    NOTE: `credential_key` is deliberately NOT emitted. nono resolves the secret
+    itself from the `service` route (env var SERVICE_TOKEN, else the macOS
+    keychain) — see spike doc section 2. There is no `nono run` flag to pass the
+    key; `--credential <service>` is the whole interface. `credential_key` is
+    retained as provenance (recorded in the spec/receipt so an audit can see
+    which credential a scope bound), not as an enforcement input.
     """
     flags: list[str] = []
     for scope in scopes:

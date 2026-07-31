@@ -1049,6 +1049,13 @@ class EnvelopeRunner:
             self.envelope.credential_scopes,
             resolved_driver=self.agent.sandbox_driver,
         )
+        # Bind the envelope's credential scopes onto the agent that runs bash.
+        # The bash tool reads agent.credential_scopes LIVE at call time, so this
+        # binding is what makes the scopes actually enforced. Without it the
+        # scopes are validated, logged, and graded 'held' yet never handed to
+        # the credential proxy — a silent no-op that hands the agent an
+        # unbounded credential.
+        self.agent.credential_scopes = list(self.envelope.credential_scopes)
         envelope_note = ENVELOPE_NOTE_TEMPLATE.format(
             writable_paths=self.envelope.writable_paths,
             max_writes=self.envelope.max_writes,
@@ -1435,7 +1442,14 @@ class EnvelopeRunner:
                 unstaged_reads=c.get("unstaged_reads", 0),
                 stage_calls=c.get("stage_calls", 0),
                 results_by_class=dict(results_by_class),
-                credential_scopes_enforced=bool(self.envelope.credential_scopes),
+                # Enforcement is real only when the AGENT that runs bash carries
+                # the scopes AND the driver is nono. Keyed on the agent (not the
+                # envelope's declaration) so a wiring regression that fails to
+                # bind the scopes grades as NOT enforced instead of rubber-stamped.
+                credential_scopes_enforced=(
+                    bool(self.agent.credential_scopes)
+                    and self.agent.sandbox_driver == "nono"
+                ),
                 events=[{"kind": e.kind, "tool": e.tool, "detail": e.detail, "iteration": e.iteration} for e in events],
             )
         return EnvelopeRunResult(
