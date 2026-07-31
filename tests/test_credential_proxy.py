@@ -101,7 +101,10 @@ class TestNonoCommand:
         assert cmd[:6] == ["nono", "run", "--allow", str(tmp_path), "--allow-cwd", "-s"]
         # bash is resolved to an absolute path (nono binary resolution is
         # PATH-sensitive); assert the shape without pinning the exact path.
-        assert cmd[-4] == "--" and cmd[-3].endswith("bash")
+        # bash is resolved to an absolute path (nono binary resolution is
+        # PATH-sensitive); assert the shape without pinning the exact path, and
+        # tolerate Windows' 'bash.EXE'.
+        assert cmd[-4] == "--" and "bash" in cmd[-3].lower()
         assert cmd[-2:] == ["-lc", "echo hi"]
         # Assert exact flag+value adjacency (not loose membership): the value
         # must immediately follow its flag, which also avoids a bare-hostname
