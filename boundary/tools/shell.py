@@ -13,18 +13,28 @@ def register_shell_tools(
     driver: str = "seatbelt",
     egress_allowlist: list[str] | None = None,
     deny_read: list[str] | None = None,
+    agent=None,
 ) -> None:
     if not allow:
         return
 
     def _bash(command: str) -> str:
+        # When an agent is wired in, read egress_allowlist and credential_scopes
+        # LIVE at call-time (the runner may set them after this registration).
+        if agent is not None:
+            live_egress = agent.egress_allowlist
+            live_scopes = agent.credential_scopes
+        else:
+            live_egress = egress_allowlist
+            live_scopes = None
         return run_sandboxed(
             command,
             workspace_root=workspace.root,
             timeout=timeout,
             driver=driver,
-            egress_allowlist=egress_allowlist,
+            egress_allowlist=live_egress,
             deny_read=deny_read,
+            credential_scopes=live_scopes,
         )
 
     @registry.add(

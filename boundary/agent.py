@@ -31,6 +31,7 @@ class Agent:
         sandbox_driver: str = "auto",
         egress_allowlist: list[str] | None = None,
         deny_read: list[str] | None = None,
+        credential_scopes: list | None = None,
         max_iters: int = 25,
         transcript: Transcript | None | bool = True,
         client_kwargs: dict | None = None,
@@ -51,6 +52,9 @@ class Agent:
         self.sandbox_driver = sandbox_driver
         self.egress_allowlist = list(egress_allowlist or [])
         self.deny_read = list(deny_read or [])
+        # Read live by the bash tool at call-time (register_shell_tools(agent=self))
+        # so a run under --sandbox-driver nono confines each command's credential.
+        self.credential_scopes = list(credential_scopes or [])
         self.workspace = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
         if isinstance(client, str):
             self.client = make_client(client, **(client_kwargs or {}))
@@ -63,7 +67,7 @@ class Agent:
             register_shell_tools(
                 self.tools, self.workspace, timeout=shell_timeout, allow=True,
                 driver=sandbox_driver, egress_allowlist=egress_allowlist,
-                deny_read=self.deny_read,
+                deny_read=self.deny_read, agent=self,
             )
         if enable_web:
             # fetch_url makes in-process HTTP calls that the srt sandbox (which

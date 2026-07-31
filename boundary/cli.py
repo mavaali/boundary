@@ -6,7 +6,39 @@ import sys
 from pathlib import Path
 
 from boundary.agent import Agent
+from boundary.credential_proxy import CredentialScope
 from boundary.overlay import Overlay
+
+
+def parse_credential_scope_arg(raw: str) -> CredentialScope:
+    """Parse 'service=..,host=..,key=..,endpoint=..[,endpoint=..]' into a
+    CredentialScope. Values (env:// refs, endpoint globs) contain ':' and '/'
+    but never ',' — split on ',' then on the first '='."""
+    service = host = key = None
+    endpoints: list[str] = []
+    for part in raw.split(","):
+        if "=" not in part:
+            raise ValueError(f"malformed credential-scope segment: {part!r}")
+        k, v = part.split("=", 1)
+        if k == "service":
+            service = v
+        elif k == "host":
+            host = v
+        elif k == "key":
+            key = v
+        elif k == "endpoint":
+            endpoints.append(v)
+        else:
+            raise ValueError(f"unknown credential-scope key: {k!r}")
+    if not service:
+        raise ValueError("credential-scope missing required 'service='")
+    if not host:
+        raise ValueError("credential-scope missing required 'host='")
+    if not key:
+        raise ValueError("credential-scope missing required 'key='")
+    return CredentialScope(
+        service=service, host=host, credential_key=key, allow_endpoints=endpoints
+    )
 
 
 def _parse_attribution(pairs: list[str]) -> dict:
@@ -293,6 +325,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--require-srt-for-bash", action="store_true",
                      help="refuse the bash tool unless the sandbox driver is srt (egress-bounded). "
                           "seatbelt/none do not contain egress.")
+    run.add_argument("--credential-scope", action="append", default=[],
+                     dest="credential_scopes",
+                     metavar="service=NAME,host=HOST,key=env://VAR,endpoint=METHOD:/path[,endpoint=...]",
+                     help="scope a credential to specific HTTP method+path patterns, enforced via "
+                          "the nono sandbox under --sandbox-driver nono (fail-closed). Repeatable.")
     run.add_argument("--persona", help="path to a persona charter.md to load as system prompt (Clawpilot adapter)")
     run.add_argument("--web", action="store_true", help="enable fetch_url tool")
     run.add_argument("--clawpilot", action="store_true", help="enable skill_load/charter_load/workiq bridge tools")
@@ -1024,6 +1061,13 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             print(f"ERROR: {e}")
             return 2
+        try:
+            credential_scopes = [
+                parse_credential_scope_arg(s) for s in getattr(args, "credential_scopes", [])
+            ]
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return 2
         if attribution and not args.envelope_writable:
             print("[note] --attribution is recorded only for envelope-mode runs "
                   "(pass --envelope-writable ...); ignoring for this raw run.")
@@ -1167,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
                     commit_allowlist=commit_allowlist,
                     on_taint=args.on_taint,
                     require_srt_for_bash=args.require_srt_for_bash,
+                    credential_scopes=credential_scopes,
                 )
                 import time as _time
                 runner = EnvelopeRunner(agent, env)

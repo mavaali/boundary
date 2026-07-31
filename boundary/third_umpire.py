@@ -525,6 +525,33 @@ class ThirdUmpire:
                     severity="fail",
                 ))
 
+        # Check 17: credential_scope_held — the credential-scoping leg. A run that
+        # declared credential_scopes is attested as enforced by the nono sandbox
+        # (phantom-injected credential + out-of-scope endpoints 403). A declared-
+        # but-not-enforced run (driver wasn't nono) is a fail: the credential was
+        # unbounded. Only reported when scopes were actually in play.
+        credential_scopes = (envelope_start or {}).get("credential_scopes", [])
+        if credential_scopes:
+            enforced = (envelope_end or {}).get("credential_scopes_enforced", False)
+            if enforced:
+                report.checks.append(CheckResult(
+                    "credential_scope_held",
+                    passed=True,
+                    detail=(f"{len(credential_scopes)} credential scope(s) enforced by the "
+                            "nono sandbox (credential phantom-injected; out-of-scope "
+                            "endpoints hard-blocked with 403)"),
+                    severity="info",
+                ))
+            else:
+                report.checks.append(CheckResult(
+                    "credential_scope_held",
+                    passed=False,
+                    detail=(f"{len(credential_scopes)} credential scope(s) declared but NOT "
+                            "enforced (sandbox driver was not 'nono'); the credential was "
+                            "unbounded for this run"),
+                    severity="fail",
+                ))
+
         # Check 14: envelope downgrades — guardrails the operator disabled.
         # A run that turned off a gate must be visibly distinct from one that
         # never needed it.
