@@ -8,6 +8,8 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-30
+
 ### Added
 - **Gateway HTTP transport** (`boundary mcp-serve --transport http`) — streamable
   HTTP on loopback with shared-secret bearer auth (token via `BOUNDARY_MCP_TOKEN`
