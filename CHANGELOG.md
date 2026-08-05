@@ -8,6 +8,33 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
 
 ## [Unreleased]
 
+_Staged for 0.13.0. **Not yet released:** `boundary launch`'s OS jail has not
+been validated against a live `srt` (see Security below and audit F26); the
+release is gated on that validation. Everything else here — the `mcp-serve`
+gateway over stdio and HTTP — is validated and release-ready._
+
+### Security
+- **Delta security audit of the MCP tool-inversion surface** (`SECURITY_AUDIT.md`,
+  2026-07-29) — reviewed the gateway, HTTP transport, and `boundary launch`; no
+  critical guarantee from the original audit is reopened. Remediation batch 1
+  fixed:
+  - **F13 (High)** — `boundary launch` passed the parent environment unfiltered,
+    so credential env vars (`AWS_*`, `GITHUB_TOKEN`, `DATABASE_URL`, …) reached
+    the jailed caller even though secret *files* were hidden. The jailed caller's
+    environment is now filtered by `strip_credential_env()` (credential-shaped
+    names dropped, listed to stderr), with `--keep-env NAME` to re-admit the one
+    the caller legitimately needs (its own model API key).
+  - **F17** — `boundary launch` now removes its scratch dir (held the bearer
+    token) on exit.
+  - **F19** — workspace path-escape errors no longer leak the absolute workspace
+    root to the caller.
+  - **F20** — `mcp-serve --transport http` warns when `--host` is bound off
+    loopback.
+  - **F21** — the HTTP bearer gate fails closed for non-`http` ASGI scopes.
+  - **Still open:** F14 (port TOCTOU), F16 (loopback egress port-scoping), and
+    F26 (no real-`srt` jail integration test) — all scheduled with the `srt`
+    validation that gates the release.
+
 ### Added
 - **Gateway HTTP transport** (`boundary mcp-serve --transport http`) — streamable
   HTTP on loopback with shared-secret bearer auth (token via `BOUNDARY_MCP_TOKEN`
@@ -17,9 +44,13 @@ changes. 1.0 is reserved for the envelope closing the full lethal trifecta
   makes involuntary containment possible at all — a stdio gateway is a child of
   the caller and inherits any jail the caller runs under, losing the very write
   access it is supposed to mediate.
-- **`boundary launch` — involuntary containment for the MCP gateway.** The
-  gateway alone is a boundary by convention (one caller flag away from bypass);
-  `launch` makes it OS-enforced. It starts the gateway outside the sandbox on
+- **`boundary launch` — involuntary containment for the MCP gateway
+  (EXPERIMENTAL).** Marked experimental until its OS jail is validated against a
+  live `srt` (audit F26): the settings it emits are unit-tested for shape, but no
+  test yet asserts that `srt` actually denies a workspace write, hides a secret,
+  or bounds egress at runtime. Do not rely on it as a security boundary until
+  that validation lands. The gateway alone is a boundary by convention (one
+  caller flag away from bypass); `launch` makes it OS-enforced. It starts the gateway outside the sandbox on
   loopback HTTP, then runs the caller CLI under srt with workspace writes DENIED
   at the OS, writes allowed only in a throwaway scratch HOME, built-in secret
   paths hidden, and egress limited to the model API domains plus loopback.

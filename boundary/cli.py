@@ -418,8 +418,10 @@ def main(argv: list[str] | None = None) -> int:
 
     launch_p = sub.add_parser(
         "launch",
-        help="run an external agent CLI jailed against a live MCP gateway — "
-             "workspace writes denied at the OS, mutations only through the envelope",
+        help="[EXPERIMENTAL] run an external agent CLI jailed against a live MCP "
+             "gateway — workspace writes denied at the OS, mutations only through "
+             "the envelope. The srt jail is not yet validated at runtime (audit "
+             "F26); do not rely on it as a security boundary until it is.",
     )
     launch_p.add_argument("--workspace", default=".")
     launch_p.add_argument("--envelope-writable", action="append", default=[])

@@ -63,6 +63,13 @@ mode is the write/read/egress boundary, not the wallet.
 
 ### Involuntary containment: `boundary launch`
 
+> **Experimental — not yet a trusted security boundary.** The srt jail below is
+> unit-tested for the *shape* of the settings it emits, but no test yet asserts
+> that srt actually denies a workspace write, hides a secret, or bounds egress at
+> runtime (audit F26). Until that runtime validation lands, treat `boundary
+> launch` as a preview: use it, but do not rely on it to contain an untrusted
+> caller. The `mcp-serve` gateway it builds on (stdio and HTTP) is validated.
+
 `mcp-serve` alone is a boundary by convention — it only binds if the caller was
 launched with its native tools stripped, and one wrong flag bypasses it.
 `boundary launch` makes the containment OS-enforced: it starts the gateway
